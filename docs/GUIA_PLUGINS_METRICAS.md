@@ -18,7 +18,7 @@ consolidar.py  ──────>  junta os metricas_<nome>.csv de todas as run
 | `metricas/base.py` | Define o contrato `MetricaPlugin`, os escopos válidos (`ESCOPOS = ('pergunta', 'run')`) e a dataclass `RunContext`. |
 | `metricas/loader.py` | `carregar_plugins(modulos)` importa os módulos, chama `criar()` e confere o contrato. Devolve `(plugins, erros)`. |
 | `metricas/runner.py` | `executar(campanha, plugins)` percorre `*/run_*`, pula runs sem `status=ok`, aplica cada plugin e grava o CSV. Se um plugin falha numa run, os outros continuam. |
-| `metricas/plugins/desempenho.py` | Builtin (escopo `run`): média/p50/p95 de latência e vazão por regime + `train_runtime` e `training_loss`. |
+| `metricas/plugins/desempenho.py` | Builtin (escopo `run`): `mean`/`median`/`p99_pior_caso` (P99 nos tempos, P1 em tokens/s) de latência e vazão por regime + `train_runtime` e `training_loss`. |
 | `metricas/plugins/bert_score.py` | Exemplo real com lib externa (escopo `pergunta`, `pip install bert-score`). |
 | `metricas/plugins/template.py` | Ponto de partida comentado (PASSO 0 a 7) com autoteste. |
 

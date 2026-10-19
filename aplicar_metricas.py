@@ -15,7 +15,7 @@
 #   metricas/base.py              contrato: Protocol MetricaPlugin + dataclass RunContext
 #   metricas/loader.py            carregar_plugins(modulos): importa, exige criar(), avisa dependencia faltante
 #   metricas/runner.py            executar(campanha, plugins): percorre */run_*, grava metricas_<nome>.csv
-#   metricas/plugins/desempenho.py builtin (escopo run): media/p50/p95 de latencia e vazao por regime + treino
+#   metricas/plugins/desempenho.py builtin (escopo run): mean/median/p99_pior_caso de latencia e vazao por regime + treino
 #   metricas/plugins/template.py  TEMPLATE comentado (PASSO 0-7) para o colega criar a metrica dele
 #   metricas/plugins/bert_score.py exemplo com lib externa (pip install bert-score)
 #   rodar_metricas.py             CLI: pasta + --plugins mod1 mod2 + --ignorar-faltantes
@@ -197,12 +197,18 @@ ARQUIVOS['metricas/plugins/__init__.py'] = r'''"""Plugins de metricas. desempenh
 '''
 
 # ---------------------------------------------------------------- metricas/plugins/desempenho.py
-ARQUIVOS['metricas/plugins/desempenho.py'] = r'''"""Builtin, escopo run: media/p50/p95 de latencia e vazao por regime + tempo e loss do treino."""
+ARQUIVOS['metricas/plugins/desempenho.py'] = r'''"""Builtin, escopo run: media/mediana/p99_pior_caso de latencia e vazao por regime + tempo e loss do treino.
+
+Mesmo criterio de mean_median_p99 dos scripts em modelos/: P99 onde menor e melhor (tempos)
+e P1 onde maior e melhor (tokens/s), a cauda lenta. Com n<100 o P99 e quase o maximo.
+"""
 import math
 
 import numpy as np
 
-COLUNAS = ['latency_s', 'ttft_s', 'tokens_per_s', 'decode_tokens_per_s', 'peak_vram_gb']
+# coluna -> o que e melhor
+COLUNAS = {'latency_s': 'lower', 'ttft_s': 'lower', 'tokens_per_s': 'higher',
+           'decode_tokens_per_s': 'higher', 'peak_vram_gb': 'lower'}
 
 
 def numero(valor):
@@ -211,6 +217,11 @@ def numero(valor):
     except (TypeError, ValueError):
         return None
     return None if math.isnan(valor) else valor
+
+
+def mean_median_p99(valores, better='lower'):
+    tail = 99 if better == 'lower' else 1
+    return float(np.mean(valores)), float(np.median(valores)), float(np.percentile(valores, tail))
 
 
 class Desempenho:
@@ -226,17 +237,15 @@ class Desempenho:
         for regime in regimes:
             rows = [row for row in run.respostas if row.get('regime') == regime]
             linha = {'regime': regime, 'n_perguntas': len(rows)}
-            for coluna in COLUNAS:
+            for coluna, better in COLUNAS.items():
                 # peak_vram_gb so entra se existir no CSV; hoje fica no summary_df (gen_peak_vram_gb).
                 if not any(coluna in row for row in rows):
                     continue
                 valores = [v for v in (numero(row.get(coluna)) for row in rows) if v is not None]
-                if valores:
-                    linha[f'{coluna}_media'] = float(np.mean(valores))
-                    linha[f'{coluna}_p50'] = float(np.percentile(valores, 50))
-                    linha[f'{coluna}_p95'] = float(np.percentile(valores, 95))
-                else:
-                    linha[f'{coluna}_media'] = linha[f'{coluna}_p50'] = linha[f'{coluna}_p95'] = None
+                media, mediana, p99 = mean_median_p99(valores, better) if valores else (None, None, None)
+                linha[f'{coluna}_mean'] = media
+                linha[f'{coluna}_median'] = mediana
+                linha[f'{coluna}_p99_pior_caso'] = p99
             # So o regime fine-tuned treina; os outros ficam vazios.
             treino = run.treino.get(regime, {})
             linha['train_runtime'] = numero(treino.get('train_runtime'))
@@ -547,10 +556,13 @@ class MetricasTest(unittest.TestCase):
         self.assertEqual(por_run, [{'modelo_id': 'unsloth/gemma-4-E4B-it', 'n_respostas': '8'}])
 
         desempenho = {row['regime']: row for row in ler(self.run / 'metricas_desempenho.csv')}
-        self.assertEqual(float(desempenho['zero-shot']['latency_s_media']), 2.5)
-        self.assertEqual(float(desempenho['zero-shot']['latency_s_p50']), 2.5)
-        self.assertEqual(desempenho['zero-shot']['decode_tokens_per_s_media'], '')
-        self.assertNotIn('peak_vram_gb_media', desempenho['zero-shot'])
+        self.assertEqual(float(desempenho['zero-shot']['latency_s_mean']), 2.5)
+        self.assertEqual(float(desempenho['zero-shot']['latency_s_median']), 2.5)
+        # Tempo: P99 (cauda alta). Tokens/s: P1 (cauda baixa).
+        self.assertAlmostEqual(float(desempenho['zero-shot']['latency_s_p99_pior_caso']), 3.97)
+        self.assertEqual(float(desempenho['zero-shot']['tokens_per_s_p99_pior_caso']), 10.0)
+        self.assertEqual(desempenho['zero-shot']['decode_tokens_per_s_mean'], '')
+        self.assertNotIn('peak_vram_gb_mean', desempenho['zero-shot'])
         self.assertEqual(desempenho['zero-shot']['train_runtime'], '')
         self.assertEqual(float(desempenho['fine-tuned']['train_runtime']), 120.0)
         self.assertEqual(float(desempenho['fine-tuned']['training_loss']), 1.5)
@@ -657,8 +669,9 @@ mudar nada no repositório: basta expor essa interface e estar no `PYTHONPATH`.
 Para criar um, copie `metricas/plugins/template.py`: ele é comentado passo a passo (PASSO 0 a 7), roda sem dependências
 e tem autoteste (`python -m metricas.plugins.template`). `metricas/plugins/bert_score.py` é um exemplo real com lib externa
 (`pip install bert-score`, gera `bert_p`, `bert_r`, `bert_f1`).
-`metricas/plugins/desempenho.py` (builtin, escopo run) dá média/p50/p95 de `latency_s`, `ttft_s`, `tokens_per_s`,
-`decode_tokens_per_s` e `peak_vram_gb` por regime, além de `train_runtime` e `training_loss`.
+`metricas/plugins/desempenho.py` (builtin, escopo run) dá `mean`, `median` e `p99_pior_caso` de `latency_s`, `ttft_s`,
+`tokens_per_s`, `decode_tokens_per_s` e `peak_vram_gb` por regime, além de `train_runtime` e `training_loss`.
+O critério é o mesmo de `mean_median_p99` em `modelos/`: P99 nos tempos e P1 em tokens/s (cauda lenta).
 Colunas ausentes no CSV são puladas: hoje o pico de VRAM da geração fica em `registros/summary_df.csv` (`gen_peak_vram_gb`), não por pergunta.
 Como `ambiente.json` ainda não grava o ID do Hugging Face, `modelo_id` vem de `registros/model_config.json` (`_name_or_path`) quando faltar.
 

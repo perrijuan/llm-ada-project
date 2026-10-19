@@ -117,10 +117,13 @@ class MetricasTest(unittest.TestCase):
         self.assertEqual(por_run, [{'modelo_id': 'unsloth/gemma-4-E4B-it', 'n_respostas': '8'}])
 
         desempenho = {row['regime']: row for row in ler(self.run / 'metricas_desempenho.csv')}
-        self.assertEqual(float(desempenho['zero-shot']['latency_s_media']), 2.5)
-        self.assertEqual(float(desempenho['zero-shot']['latency_s_p50']), 2.5)
-        self.assertEqual(desempenho['zero-shot']['decode_tokens_per_s_media'], '')
-        self.assertNotIn('peak_vram_gb_media', desempenho['zero-shot'])
+        self.assertEqual(float(desempenho['zero-shot']['latency_s_mean']), 2.5)
+        self.assertEqual(float(desempenho['zero-shot']['latency_s_median']), 2.5)
+        # Tempo: P99 (cauda alta). Tokens/s: P1 (cauda baixa).
+        self.assertAlmostEqual(float(desempenho['zero-shot']['latency_s_p99_pior_caso']), 3.97)
+        self.assertEqual(float(desempenho['zero-shot']['tokens_per_s_p99_pior_caso']), 10.0)
+        self.assertEqual(desempenho['zero-shot']['decode_tokens_per_s_mean'], '')
+        self.assertNotIn('peak_vram_gb_mean', desempenho['zero-shot'])
         self.assertEqual(desempenho['zero-shot']['train_runtime'], '')
         self.assertEqual(float(desempenho['fine-tuned']['train_runtime']), 120.0)
         self.assertEqual(float(desempenho['fine-tuned']['training_loss']), 1.5)

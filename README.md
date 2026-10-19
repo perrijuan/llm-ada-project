@@ -145,8 +145,9 @@ mudar nada no repositório: basta expor essa interface e estar no `PYTHONPATH`.
 Para criar um, copie `metricas/plugins/template.py`: ele é comentado passo a passo (PASSO 0 a 7), roda sem dependências
 e tem autoteste (`python -m metricas.plugins.template`). `metricas/plugins/bert_score.py` é um exemplo real com lib externa
 (`pip install bert-score`, gera `bert_p`, `bert_r`, `bert_f1`).
-`metricas/plugins/desempenho.py` (builtin, escopo run) dá média/p50/p95 de `latency_s`, `ttft_s`, `tokens_per_s`,
-`decode_tokens_per_s` e `peak_vram_gb` por regime, além de `train_runtime` e `training_loss`.
+`metricas/plugins/desempenho.py` (builtin, escopo run) dá `mean`, `median` e `p99_pior_caso` de `latency_s`, `ttft_s`,
+`tokens_per_s`, `decode_tokens_per_s` e `peak_vram_gb` por regime, além de `train_runtime` e `training_loss`.
+O critério é o mesmo de `mean_median_p99` em `modelos/`: P99 nos tempos e P1 em tokens/s (cauda lenta).
 Colunas ausentes no CSV são puladas: hoje o pico de VRAM da geração fica em `registros/summary_df.csv` (`gen_peak_vram_gb`), não por pergunta.
 Como `ambiente.json` ainda não grava o ID do Hugging Face, `modelo_id` vem de `registros/model_config.json` (`_name_or_path`) quando faltar.
 
