@@ -1,4 +1,5 @@
 """Pacote metricas sem GPU: plugin fake, ambos os escopos, CSV gerado e plugin faltante."""
+import ast
 import csv
 import json
 import subprocess
@@ -6,6 +7,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+import numpy as np
 
 RAIZ = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(RAIZ))
@@ -65,9 +68,14 @@ class MetricasTest(unittest.TestCase):
         linhas = []
         for regime in ['zero-shot', 'fine-tuned']:
             for i in range(4):
-                linhas.append({'regime': regime, 'question': f'q{i}', 'prediction': 'x' * (i + 1),
-                               'reference': 'ref', 'latency_s': i + 1, 'ttft_s': 0.1,
-                               'tokens_per_s': 10, 'decode_tokens_per_s': 'nan'})
+                linha = {'regime': regime, 'question': f'q{i}', 'prediction': 'x' * (i + 1),
+                         'reference': 'ref', 'latency_s': i + 1, 'ttft_s': 0.1, 'prefill_s': 0.05,
+                         'token_times': [0.1, 0.2, 0.4], 'new_tokens': 3, 'prompt_tokens': 10 + i,
+                         'peak_rss_bytes': 1000 * (i + 1), 'tokens_per_s': 10, 'decode_tokens_per_s': 'nan'}
+                if regime == 'fine-tuned':
+                    del linha['prefill_s']
+                    del linha['peak_rss_bytes']
+                linhas.append(linha)
         escrever_csv(self.run / 'gemma4-e4b-medquad-unsloth-extended' / 'answers_per_question.csv', linhas)
         escrever_csv(self.run / 'registros' / 'treino_fine-tuned_metricas.csv',
                      [{'training_loss': 1.5, 'global_step': 30, 'train_runtime': 120.0}])
@@ -117,11 +125,18 @@ class MetricasTest(unittest.TestCase):
         self.assertEqual(por_run, [{'modelo_id': 'unsloth/gemma-4-E4B-it', 'n_respostas': '8'}])
 
         desempenho = {row['regime']: row for row in ler(self.run / 'metricas_desempenho.csv')}
-        self.assertEqual(float(desempenho['zero-shot']['latency_s_media']), 2.5)
-        self.assertEqual(float(desempenho['zero-shot']['latency_s_p50']), 2.5)
-        self.assertEqual(desempenho['zero-shot']['decode_tokens_per_s_media'], '')
-        self.assertNotIn('peak_vram_gb_media', desempenho['zero-shot'])
+        self.assertAlmostEqual(float(desempenho['zero-shot']['prefill_ms']), 50)
+        self.assertAlmostEqual(float(desempenho['zero-shot']['decode_mean_ms']), 150)
+        self.assertAlmostEqual(float(desempenho['zero-shot']['decode_p95_ms']), 200)
+        self.assertAlmostEqual(float(desempenho['zero-shot']['ttft_ms']), 100)
+        self.assertAlmostEqual(float(desempenho['zero-shot']['overall_tok/s']), 1.2)
+        self.assertEqual(float(desempenho['zero-shot']['peak_rss_bytes']), 4000)
+        self.assertAlmostEqual(float(desempenho['zero-shot']['prompt_tokens']), 11.5)
+        self.assertAlmostEqual(float(desempenho['zero-shot']['generated_tokens']), 3)
         self.assertEqual(desempenho['zero-shot']['train_runtime'], '')
+        self.assertEqual(desempenho['fine-tuned']['prefill_ms'], '')
+        self.assertEqual(desempenho['fine-tuned']['peak_rss_bytes'], '')
+        self.assertAlmostEqual(float(desempenho['fine-tuned']['decode_mean_ms']), 150)
         self.assertEqual(float(desempenho['fine-tuned']['train_runtime']), 120.0)
         self.assertEqual(float(desempenho['fine-tuned']['training_loss']), 1.5)
         self.assertFalse((self.campanha / 'gemma4' / 'run_02' / 'metricas_fake.csv').exists())
@@ -131,6 +146,39 @@ class MetricasTest(unittest.TestCase):
         junto = ler(self.campanha / 'consolidado' / 'metricas_fake.csv')
         self.assertEqual(junto[0]['exec_modelo'], 'gemma4')
         self.assertEqual(junto[0]['exec_seed'], '42')
+
+    def test_metricas_velocidade_modelos(self):
+        nomes = ['gemma4', 'huatuogpt', 'medgemma', 'qwen35']
+        funcoes = ['peak_rss_bytes', 'metricas_velocidade', 'formatar_metricas']
+        fontes = []
+        for nome in nomes:
+            texto = (RAIZ / 'modelos' / f'{nome}.py').read_text(encoding='utf-8')
+            arvore = ast.parse(texto)
+            definicoes = {node.name: ast.get_source_segment(texto, node)
+                          for node in ast.walk(arvore) if isinstance(node, ast.FunctionDef)}
+            fontes.append('\n\n'.join(definicoes[funcao] for funcao in funcoes))
+        self.assertTrue(all(fonte == fontes[0] for fonte in fontes[1:]))
+
+        namespace = {'np': np}
+        exec(fontes[0], namespace)
+        rows = [
+            {'total_s': 2, 'ttft_s': 0.1, 'prefill_s': 0.05, 'token_times': [0, 0.1, 0.3],
+             'new_tokens': 3, 'prompt_tokens': 10, 'peak_rss_bytes': 1000},
+            {'total_s': 4, 'ttft_s': 0.3, 'prefill_s': 0.15, 'token_times': [0, 0.2, 0.4],
+             'new_tokens': 5, 'prompt_tokens': 20, 'peak_rss_bytes': 2000},
+        ]
+        metricas = namespace['metricas_velocidade'](rows)
+        self.assertEqual(metricas['input'], {'prompt_tokens': 15.0, 'generated_tokens': 4.0})
+        self.assertAlmostEqual(metricas['prefill']['latency_ms'], 100)
+        self.assertAlmostEqual(metricas['decode']['mean_ms'], 175)
+        self.assertAlmostEqual(metricas['decode']['p95_ms'], 200)
+        self.assertAlmostEqual(metricas['e2e']['ttft_ms'], 200)
+        self.assertAlmostEqual(metricas['e2e']['overall_tokens_per_sec'], 8 / 6)
+        self.assertEqual(metricas['memory']['peak_rss_bytes'], 2000)
+        bloco = namespace['formatar_metricas'](metricas)
+        self.assertTrue(bloco.startswith('[METRICS]'))
+        self.assertEqual(len(bloco.splitlines()), 9)
+        self.assertIn('  decode_p95_ms:     200.00', bloco.splitlines())
 
     def test_plugin_faltante(self):
         plugins, erros = carregar_plugins(['plugin_sem_dep', 'plugin_inexistente_abc', 'plugin_fake'])
