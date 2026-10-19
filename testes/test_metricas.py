@@ -164,6 +164,15 @@ class MetricasTest(unittest.TestCase):
         self.assertIn('boom', relatorio[self.run]['falhou']['quebra'])
         self.assertEqual(relatorio[self.run]['ok'], ['fake'])
 
+    def test_bloco_aplicar_igual_ao_pacote(self):
+        # aplicar_metricas.py carrega uma copia dos arquivos; ela precisa estar igual ao repositorio.
+        texto = (RAIZ / 'aplicar_metricas.py').read_text(encoding='utf-8')
+        definicoes = {}
+        exec(texto.split('\n# 1. Confere')[0], definicoes)
+        for nome, conteudo in definicoes['ARQUIVOS'].items():
+            self.assertEqual(conteudo, (RAIZ / nome).read_text(encoding='utf-8'),
+                             f'{nome} mudou: regenere aplicar_metricas.py')
+
     def test_cli(self):
         env_path = f'{self.modulos}'
         base = [sys.executable, str(RAIZ / 'rodar_metricas.py'), str(self.campanha), '--plugins']

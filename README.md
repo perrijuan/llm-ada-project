@@ -124,6 +124,9 @@ python consolidar.py campanha_clinico                          # junta em consol
 Sem `--ignorar-faltantes`, um plugin que não importa (ex.: `bert_score` não instalado) para tudo
 antes de rodar; com a opção, segue com os demais. O CLI lista por run quais plugins rodaram ou falharam.
 
+Para aplicar o pacote em outra cópia do projeto (ou conferir antes de usar), rode `python aplicar_metricas.py` na raiz:
+ele recria os arquivos de `metricas/`, `rodar_metricas.py` e os testes, e roda a verificação.
+
 Passo a passo para criar um plugin novo (arquitetura, contrato, testes e erros comuns): [docs/GUIA_PLUGINS_METRICAS.md](docs/GUIA_PLUGINS_METRICAS.md).
 
 Cada plugin é um módulo Python importável (`--plugins pacote.modulo`) com o contrato de `metricas/base.py`:
