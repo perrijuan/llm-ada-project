@@ -1,0 +1,42 @@
+
+================================================================================
+Sample 1
+================================================================================
+Question: what research (or clinical trials) is being done for Glaucoma ?
+
+Before fine-tuning:
+Research into glaucoma is ongoing, focusing on identifying novel therapeutic targets and improving treatment outcomes. Clinical trials are investigating the efficacy of new medications, including novel prostaglandin analogs, beta-blockers, and alpha-adrenergic agonists, often in combination with other agents. Additionally, research is exploring the potential of gene therapy, stem cell transplantation, and laser-based treatments to slow or halt the progression of the disease. Some studies are also looking at the role of inflammation and oxidative stress in glaucoma pathogenesis and how to targe...
+
+After fine-tuning:
+The National Eye Institute (NEI) is funding research to understand the causes of glaucoma and to develop new treatments. Researchers are studying how the optic nerve is affected in glaucoma and how this damage occurs. They are also looking for ways to prevent glaucoma and to slow its progression. Researchers are studying how the optic nerve is affected in glaucoma and how this damage occurs. They are also looking for ways to prevent glaucoma and to slow its progression. Researchers are studying how the optic nerve is affected in glaucoma and how this damage occurs. They are also looking for wa...
+
+Reference answer:
+Through studies in the laboratory and with patients, the National Eye Institute is seeking better ways to detect, treat, and prevent vision loss in people with glaucoma. For example, researchers have discovered genes that could help explain how glaucoma damages the eye. NEI also is supporting studies to learn more about who is likely to get glaucoma, when to treat people who have increased eye pressure, and which treatment to use first.
+
+================================================================================
+Sample 2
+================================================================================
+Question: Is acral peeling skin syndrome inherited ?
+
+Before fine-tuning:
+Yes, acral peeling skin syndrome is an inherited condition. It is caused by mutations in the filaggrin gene (FLG) located on chromosome 1. These mutations lead to a deficiency in the production of filaggrin, a protein important for maintaining the skin barrier. This deficiency results in dry, scaly, and peeling skin, particularly on the hands and feet.
+
+After fine-tuning:
+Acral peeling skin syndrome is inherited in an autosomal dominant pattern. This means one copy of the altered gene in each cell is sufficient to cause the disorder. The altered gene is located on chromosome 17.
+
+Reference answer:
+This condition is inherited in an autosomal recessive pattern, which means both copies of the gene in each cell have mutations. The parents of an individual with an autosomal recessive condition each carry one copy of the mutated gene, but they typically do not show signs and symptoms of the condition.
+
+================================================================================
+Sample 3
+================================================================================
+Question: Is distal hereditary motor neuropathy, type V inherited ?
+
+Before fine-tuning:
+Yes, distal hereditary motor neuropathy, type V (DMN-V) is an inherited condition. It is caused by mutations in the PMP22 gene, which is passed down through families. This genetic mutation affects the function of the peripheral nerves, leading to muscle weakness and wasting, primarily in the hands and feet.
+
+After fine-tuning:
+This condition is inherited in an autosomal dominant pattern, which means one copy of the altered gene in each cell is sufficient to cause the disorder. The altered gene is located on chromosome 17.
+
+Reference answer:
+This condition is inherited in an autosomal dominant pattern, which means one copy of the altered gene in each cell is sufficient to cause the disorder. Some people who have the altered gene never develop the condition, a situation known as reduced penetrance.

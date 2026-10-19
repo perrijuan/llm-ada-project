@@ -1,0 +1,42 @@
+
+================================================================================
+Sample 1
+================================================================================
+Question: what research (or clinical trials) is being done for Glaucoma ?
+
+Before fine-tuning:
+Clinical trials are investigating new medications and treatments to better manage glaucoma, including novel therapies that target intraocular pressure and neuroprotection. Researchers are also exploring advanced imaging techniques and genetic factors to improve diagnosis and treatment strategies. Additionally, studies are focusing on developing more effective surgical interventions and evaluating the long-term efficacy of existing treatments.
+
+After fine-tuning:
+ClinicalTrials.gov lists trials that are studying or have studied Glaucoma. Click on the link to go to ClinicalTrials.gov to read descriptions of these studies.
+
+Reference answer:
+Through studies in the laboratory and with patients, the National Eye Institute is seeking better ways to detect, treat, and prevent vision loss in people with glaucoma. For example, researchers have discovered genes that could help explain how glaucoma damages the eye. NEI also is supporting studies to learn more about who is likely to get glaucoma, when to treat people who have increased eye pressure, and which treatment to use first.
+
+================================================================================
+Sample 2
+================================================================================
+Question: Is acral peeling skin syndrome inherited ?
+
+Before fine-tuning:
+Acral peeling skin syndrome is inherited in an autosomal dominant manner, meaning it can be passed from parent to child and typically requires only one affected parent to pass on the gene for a child to be affected.
+
+After fine-tuning:
+Acral peeling skin syndrome is inherited in an autosomal dominant pattern, which means one copy of the altered gene in each cell is sufficient to cause the disorder. In some cases, an affected person inherits the mutation from one affected parent. Other cases result from new mutations in the gene and occur in people with no history of the disorder in their family.
+
+Reference answer:
+This condition is inherited in an autosomal recessive pattern, which means both copies of the gene in each cell have mutations. The parents of an individual with an autosomal recessive condition each carry one copy of the mutated gene, but they typically do not show signs and symptoms of the condition.
+
+================================================================================
+Sample 3
+================================================================================
+Question: Is distal hereditary motor neuropathy, type V inherited ?
+
+Before fine-tuning:
+Yes, distal hereditary motor neuropathy, type V is inherited in an autosomal recessive manner.
+
+After fine-tuning:
+Distal hereditary motor neuropathy, type V is inherited in an autosomal dominant pattern, which means one copy of the altered gene in each cell is sufficient to cause the disorder. In some cases, an affected person inherits the mutation from one affected parent. Other cases result from new mutations in the gene and occur in people with no history of the disorder in their family.
+
+Reference answer:
+This condition is inherited in an autosomal dominant pattern, which means one copy of the altered gene in each cell is sufficient to cause the disorder. Some people who have the altered gene never develop the condition, a situation known as reduced penetrance.

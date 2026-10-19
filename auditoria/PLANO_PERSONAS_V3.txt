@@ -1,0 +1,13 @@
+gemma4       run_01 | seed=42 rep=1 | persona=clinico split_seed=42 | zero-shot -> 3-shot -> 5-shot -> FT 5 epocas
+gemma4       run_02 | seed=123 rep=1 | persona=clinico split_seed=42 | zero-shot -> 3-shot -> 5-shot -> FT 5 epocas
+gemma4       run_03 | seed=2026 rep=1 | persona=clinico split_seed=42 | zero-shot -> 3-shot -> 5-shot -> FT 5 epocas
+huatuogpt    run_01 | seed=42 rep=1 | persona=clinico split_seed=42 | zero-shot -> 3-shot -> 5-shot -> FT 5 epocas
+huatuogpt    run_02 | seed=123 rep=1 | persona=clinico split_seed=42 | zero-shot -> 3-shot -> 5-shot -> FT 5 epocas
+huatuogpt    run_03 | seed=2026 rep=1 | persona=clinico split_seed=42 | zero-shot -> 3-shot -> 5-shot -> FT 5 epocas
+medgemma     run_01 | seed=42 rep=1 | persona=clinico split_seed=42 | zero-shot -> 3-shot -> 5-shot -> FT 5 epocas
+medgemma     run_02 | seed=123 rep=1 | persona=clinico split_seed=42 | zero-shot -> 3-shot -> 5-shot -> FT 5 epocas
+medgemma     run_03 | seed=2026 rep=1 | persona=clinico split_seed=42 | zero-shot -> 3-shot -> 5-shot -> FT 5 epocas
+qwen35       run_01 | seed=42 rep=1 | persona=clinico split_seed=42 | zero-shot -> 3-shot -> 5-shot -> FT 5 epocas
+qwen35       run_02 | seed=123 rep=1 | persona=clinico split_seed=42 | zero-shot -> 3-shot -> 5-shot -> FT 5 epocas
+qwen35       run_03 | seed=2026 rep=1 | persona=clinico split_seed=42 | zero-shot -> 3-shot -> 5-shot -> FT 5 epocas
+Total: 12 processos sequenciais; 12 fine-tunings.

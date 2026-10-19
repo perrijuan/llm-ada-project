@@ -1,0 +1,11 @@
+# Instale primeiro PyTorch com CUDA e Unsloth conforme a documentacao oficial.
+# Nao instalar/atualizar entre as dez repeticoes. Congele o ambiente apos o piloto.
+tqdm
+pandas
+numpy
+matplotlib
+ipython
+datasets
+sentencepiece
+huggingface_hub
+scipy

@@ -1,0 +1,42 @@
+
+================================================================================
+Sample 1
+================================================================================
+Question: what research (or clinical trials) is being done for Glaucoma ?
+
+Before fine-tuning:
+Current research focuses on developing novel drug delivery systems, such as intravitreal implants and sustained-release patches, to improve medication adherence and reduce systemic side effects. Scientists are also investigating advanced surgical techniques like laser trabuloplasty and minimally invasive glaucoma surgery to enhance long-term pressure control. Additionally, clinical trials are exploring the potential of gene therapy and stem cell transplants to repair damaged optic nerve fibers and reverse vision loss.
+
+After fine-tuning:
+The National Eye Institute (NEI) supports research on glaucoma to help people with this disease. The NEI supports research on the causes, treatments, and prevention of glaucoma. The NEI supports research on the causes, treatments, and prevention of glaucoma. The NEI supports research on the causes, treatments, and prevention of glaucoma. The NEI supports research on the causes, treatments, and prevention of glaucoma. The NEI supports research on the causes, treatments, and prevention of glaucoma. The NEI supports research on the causes, treatments, and prevention of glaucoma. The NEI supports ...
+
+Reference answer:
+Through studies in the laboratory and with patients, the National Eye Institute is seeking better ways to detect, treat, and prevent vision loss in people with glaucoma. For example, researchers have discovered genes that could help explain how glaucoma damages the eye. NEI also is supporting studies to learn more about who is likely to get glaucoma, when to treat people who have increased eye pressure, and which treatment to use first.
+
+================================================================================
+Sample 2
+================================================================================
+Question: Is acral peeling skin syndrome inherited ?
+
+Before fine-tuning:
+Yes, acral peeling skin syndrome is an inherited disorder. It is typically caused by mutations in the *TGM3* gene and follows an autosomal recessive inheritance pattern, meaning an individual must inherit two copies of the mutated gene, one from each parent, to develop the condition.
+
+After fine-tuning:
+Acral peeling skin syndrome is inherited in an autosomal dominant pattern. This means that one copy of the altered gene in each cell is sufficient to cause the disorder.
+
+Reference answer:
+This condition is inherited in an autosomal recessive pattern, which means both copies of the gene in each cell have mutations. The parents of an individual with an autosomal recessive condition each carry one copy of the mutated gene, but they typically do not show signs and symptoms of the condition.
+
+================================================================================
+Sample 3
+================================================================================
+Question: Is distal hereditary motor neuropathy, type V inherited ?
+
+Before fine-tuning:
+Yes, distal hereditary motor neuropathy type V (dHMN5) is an autosomal dominant genetic disorder. It is caused by mutations in the *KCNJ18* gene, which encodes a potassium channel subunit. Individuals with this condition typically inherit the mutation from an affected parent, though it can also arise from a new (de novo) mutation.
+
+After fine-tuning:
+This condition is inherited in an autosomal dominant pattern, which means one copy of the altered gene in each cell is sufficient to cause the disorder.
+
+Reference answer:
+This condition is inherited in an autosomal dominant pattern, which means one copy of the altered gene in each cell is sufficient to cause the disorder. Some people who have the altered gene never develop the condition, a situation known as reduced penetrance.

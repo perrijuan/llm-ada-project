@@ -1,0 +1,1649 @@
+--- recebido/consolidar.py
++++ revisado/consolidar.py
+@@ -1,47 +1,50 @@
+-"""Junta CSVs preservando modelo, repeticao, condicao e origem das metricas."""
+-import argparse
+-import csv
+-import json
+-from collections import defaultdict
+-from pathlib import Path
+-from registro import escrever_csv
+-
+-
+-def consolidar(root):
+-    root = Path(root)
+-    groups = defaultdict(list)
+-    runs = []
+-    versions = {json.loads(p.read_text(encoding='utf-8')).get('protocolo', 'legacy')
+-                for p in root.glob('*/run_*/status.json')}
+-    if len(versions) > 1:
+-        raise ValueError('Protocolos diferentes na mesma campanha. Use uma --saida nova para ICL.')
+-    for status_path in sorted(root.glob('*/run_*/status.json')):
+-        status = json.loads(status_path.read_text(encoding='utf-8'))
+-        runs.append(status)
+-        # Resultados parciais ficam na pasta original, fora da comparacao final.
+-        if status['status'] != 'ok':
+-            continue
+-        folder = status_path.parent
+-        for path in sorted(folder.rglob('*.csv')):
+-            if path.name.startswith('dados_'):
+-                continue
+-            with path.open(encoding='utf-8-sig', newline='') as f:
+-                rows = list(csv.DictReader(f))
+-            # O nome do arquivo diferencia benchmark, extended e registro.
+-            key = ('registro__' if path.parent.name == 'registros' else '') + path.name
+-            for row in rows:
+-                groups[key].append({'exec_modelo': status['modelo'], 'exec_repeticao': status['repeticao'],
+-                                    'exec_seed': status['seed'], 'exec_origem': path.relative_to(folder).as_posix(),
+-                                    **row})
+-    out = root / 'consolidado'
+-    out.mkdir(parents=True, exist_ok=True)
+-    escrever_csv(out / 'execucoes.csv', runs)
+-    for name, rows in groups.items():
+-        escrever_csv(out / name, rows)
+-    return groups
+-
+-
+-if __name__ == '__main__':
+-    parser = argparse.ArgumentParser(description=__doc__)
+-    parser.add_argument('pasta', type=Path, nargs='?', default=Path('resultados_icl'))
+-    consolidar(parser.parse_args().pasta)
++"""Junta CSVs preservando modelo, repeticao, condicao e origem das metricas."""
++import argparse
++import csv
++import json
++from collections import defaultdict
++from pathlib import Path
++from registro import escrever_csv
++
++
++def consolidar(root):
++    root = Path(root)
++    groups = defaultdict(list)
++    runs = []
++    versions = {json.loads(p.read_text(encoding='utf-8')).get('protocolo', 'legacy')
++                for p in root.glob('*/run_*/status.json')}
++    if len(versions) > 1:
++        raise ValueError('Protocolos diferentes na mesma campanha. Use uma --saida nova para ICL.')
++    for status_path in sorted(root.glob('*/run_*/status.json')):
++        status = json.loads(status_path.read_text(encoding='utf-8'))
++        runs.append(status)
++        # Resultados parciais ficam na pasta original, fora da comparacao final.
++        if status['status'] != 'ok':
++            continue
++        folder = status_path.parent
++        for path in sorted(folder.rglob('*.csv')):
++            if path.name.startswith('dados_'):
++                continue
++            with path.open(encoding='utf-8-sig', newline='') as f:
++                rows = list(csv.DictReader(f))
++            # O nome do arquivo diferencia benchmark, extended e registro.
++            key = ('registro__' if path.parent.name == 'registros' else '') + path.name
++            for row in rows:
++                groups[key].append({'exec_modelo': status['modelo'], 'exec_repeticao': status['repeticao'],
++                                    'exec_seed': status['seed'],
++                                    'exec_split_seed': status.get('split_seed', 42),
++                                    'exec_persona': status.get('persona', 'original'),
++                                    'exec_origem': path.relative_to(folder).as_posix(),
++                                    **row})
++    out = root / 'consolidado'
++    out.mkdir(parents=True, exist_ok=True)
++    escrever_csv(out / 'execucoes.csv', runs)
++    for name, rows in groups.items():
++        escrever_csv(out / name, rows)
++    return groups
++
++
++if __name__ == '__main__':
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument('pasta', type=Path, nargs='?', default=Path('resultados_icl'))
++    consolidar(parser.parse_args().pasta)
+--- recebido/modelos/gemma4.py
++++ revisado/modelos/gemma4.py
+@@ -23,6 +23,7 @@
+ from transformers.generation.streamers import BaseStreamer
+ from tqdm.auto import tqdm
+ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
++from prompts_medicos import configuracao
+ from registro import iniciar, etapa, registrar_trainer, salvar_resultado, salvar_tabelas, salvar_figuras, escrever_csv
+ iniciar('gemma4')
+ MODEL_ID = "unsloth/gemma-4-E4B-it"
+@@ -37,7 +38,10 @@
+ MAX_SEQ_LENGTH = 768  # comprimento de treinamento do tutorial
+ MODEL_CONTEXT_LENGTH = 16384  # limite para demonstracoes completas na inferencia
+ COMPARISON_SAMPLE_COUNT = 3
+-SEED = 42
++PROMPT_CONFIG = configuracao()
++SEED = PROMPT_CONFIG['seed']
++SPLIT_SEED = PROMPT_CONFIG['split_seed']
++PERSONA = PROMPT_CONFIG['persona']
+ LOAD_IN_4BIT = True
+ FINE_TUNING_EPOCHS = 5
+ LEARNING_RATE = 2e-5
+@@ -50,8 +54,8 @@
+ GEN_MAX_NEW_TOKENS = 160
+ MEDQA_N = 100
+ PUBMEDQA_N = 100
+-SYSTEM_PROMPT = "Answer the medical question directly in 2-4 factual sentences."
+-MCQ_SYSTEM_PROMPT = "You are a medical expert. Choose the single best option."
++SYSTEM_PROMPT = PROMPT_CONFIG['system_prompt']
++MCQ_SYSTEM_PROMPT = PROMPT_CONFIG['mcq_system_prompt']
+ PUBMEDQA_LETTER = {'yes': 'A', 'no': 'B', 'maybe': 'C'}
+ DATASET_ID = 'keivalya/MedQuad-MedicalQnADataset'
+ EXTENDED_DIR = f'{OUTPUT_DIR}-extended'
+@@ -181,18 +185,18 @@
+ filtered_dataset = filtered_dataset.select(indices)
+ if len(filtered_dataset) < SAMPLE_SIZE:
+     raise ValueError('Menos exemplos unicos do que SAMPLE_SIZE.')
+-subset = filtered_dataset.shuffle(seed=SEED).select(range(SAMPLE_SIZE))
+-split_dataset = subset.train_test_split(test_size=EVAL_SIZE, seed=SEED)
++subset = filtered_dataset.shuffle(seed=SPLIT_SEED).select(range(SAMPLE_SIZE))
++split_dataset = subset.train_test_split(test_size=EVAL_SIZE, seed=SPLIT_SEED)
+ train_dataset, eval_dataset = split_dataset['train'], split_dataset['test']
+ extended_eval = eval_dataset
+-comparison_examples = eval_dataset.shuffle(seed=SEED).select(range(COMPARISON_SAMPLE_COUNT))
++comparison_examples = eval_dataset.shuffle(seed=SPLIT_SEED).select(range(COMPARISON_SAMPLE_COUNT))
+ speed_questions = eval_dataset.select(range(min(SPEED_N, len(eval_dataset))))['Question']
+ 
+ # Benchmarks auxiliares: demonstracoes da propria tarefa, nunca do teste.
+-medqa = load_dataset('GBaker/MedQA-USMLE-4-options', split='test').shuffle(seed=SEED)
++medqa = load_dataset('GBaker/MedQA-USMLE-4-options', split='test').shuffle(seed=SPLIT_SEED)
+ medqa = medqa.select(range(min(MEDQA_N, len(medqa))))
+ medqa_train = load_dataset('GBaker/MedQA-USMLE-4-options', split='train')
+-pubmed_all = load_dataset('qiaojin/PubMedQA', 'pqa_labeled', split='train').shuffle(seed=SEED)
++pubmed_all = load_dataset('qiaojin/PubMedQA', 'pqa_labeled', split='train').shuffle(seed=SPLIT_SEED)
+ pubmedqa = pubmed_all.select(range(min(PUBMEDQA_N, len(pubmed_all))))
+ pubmed_train = pubmed_all.select(range(len(pubmedqa), len(pubmed_all)))
+ 
+@@ -227,6 +231,8 @@
+ 
+ # 3. ICL apenas monta mensagens; nao treina pesos.
+ def select_demonstrations(task, question, shots):
++    if shots not in (0, 3, 5):
++        raise ValueError('Shots deve ser 0, 3 ou 5.')
+     if shots == 0:
+         return []
+     digest = hashlib.sha256(f'{SEED}|{task}|{question}'.encode('utf-8')).digest()
+@@ -235,6 +241,8 @@
+     return rng.sample(demo_pools[task], 5)[:shots]
+ 
+ def make_messages(task, question, user_text, system_prompt):
++    if CURRENT_CONDITION == 'fine-tuned' and CURRENT_SHOTS != 0:
++        raise ValueError('Fine-tuned deve ser avaliado sem demonstracoes.')
+     demos = select_demonstrations(task, question, CURRENT_SHOTS)
+     messages = [{'role': 'system', 'content': system_prompt}]
+     for demo in demos:
+@@ -243,6 +251,7 @@
+     messages.append({'role': 'user', 'content': user_text})
+     prompt_records[(CURRENT_CONDITION, task, question)] = {
+         'condition': CURRENT_CONDITION, 'task': task, 'question': question,
++        'seed': SEED, 'split_seed': SPLIT_SEED, 'persona': PERSONA,
+         'shots': CURRENT_SHOTS, 'demo_ids': [d['id'] for d in demos], 'messages': messages}
+     return messages
+ 
+--- recebido/modelos/huatuogpt.py
++++ revisado/modelos/huatuogpt.py
+@@ -23,6 +23,7 @@
+ from transformers.generation.streamers import BaseStreamer
+ from tqdm.auto import tqdm
+ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
++from prompts_medicos import configuracao
+ from registro import iniciar, etapa, registrar_trainer, salvar_resultado, salvar_tabelas, salvar_figuras, escrever_csv
+ iniciar('huatuogpt')
+ MODEL_ID = "FreedomIntelligence/HuatuoGPT-o1-7B"
+@@ -37,7 +38,10 @@
+ MAX_SEQ_LENGTH = 768  # comprimento de treinamento do tutorial
+ MODEL_CONTEXT_LENGTH = 16384  # limite para demonstracoes completas na inferencia
+ COMPARISON_SAMPLE_COUNT = 3
+-SEED = 42
++PROMPT_CONFIG = configuracao()
++SEED = PROMPT_CONFIG['seed']
++SPLIT_SEED = PROMPT_CONFIG['split_seed']
++PERSONA = PROMPT_CONFIG['persona']
+ LOAD_IN_4BIT = True
+ FINE_TUNING_EPOCHS = 5
+ LEARNING_RATE = 2e-5
+@@ -50,8 +54,8 @@
+ GEN_MAX_NEW_TOKENS = 160
+ MEDQA_N = 100
+ PUBMEDQA_N = 100
+-SYSTEM_PROMPT = "Answer the medical question directly in 2-4 factual sentences."
+-MCQ_SYSTEM_PROMPT = "You are a medical expert. Choose the single best option."
++SYSTEM_PROMPT = PROMPT_CONFIG['system_prompt']
++MCQ_SYSTEM_PROMPT = PROMPT_CONFIG['mcq_system_prompt']
+ PUBMEDQA_LETTER = {'yes': 'A', 'no': 'B', 'maybe': 'C'}
+ DATASET_ID = 'keivalya/MedQuad-MedicalQnADataset'
+ EXTENDED_DIR = f'{OUTPUT_DIR}-extended'
+@@ -188,18 +192,18 @@
+ filtered_dataset = filtered_dataset.select(indices)
+ if len(filtered_dataset) < SAMPLE_SIZE:
+     raise ValueError('Menos exemplos unicos do que SAMPLE_SIZE.')
+-subset = filtered_dataset.shuffle(seed=SEED).select(range(SAMPLE_SIZE))
+-split_dataset = subset.train_test_split(test_size=EVAL_SIZE, seed=SEED)
++subset = filtered_dataset.shuffle(seed=SPLIT_SEED).select(range(SAMPLE_SIZE))
++split_dataset = subset.train_test_split(test_size=EVAL_SIZE, seed=SPLIT_SEED)
+ train_dataset, eval_dataset = split_dataset['train'], split_dataset['test']
+ extended_eval = eval_dataset
+-comparison_examples = eval_dataset.shuffle(seed=SEED).select(range(COMPARISON_SAMPLE_COUNT))
++comparison_examples = eval_dataset.shuffle(seed=SPLIT_SEED).select(range(COMPARISON_SAMPLE_COUNT))
+ speed_questions = eval_dataset.select(range(min(SPEED_N, len(eval_dataset))))['Question']
+ 
+ # Benchmarks auxiliares: demonstracoes da propria tarefa, nunca do teste.
+-medqa = load_dataset('GBaker/MedQA-USMLE-4-options', split='test').shuffle(seed=SEED)
++medqa = load_dataset('GBaker/MedQA-USMLE-4-options', split='test').shuffle(seed=SPLIT_SEED)
+ medqa = medqa.select(range(min(MEDQA_N, len(medqa))))
+ medqa_train = load_dataset('GBaker/MedQA-USMLE-4-options', split='train')
+-pubmed_all = load_dataset('qiaojin/PubMedQA', 'pqa_labeled', split='train').shuffle(seed=SEED)
++pubmed_all = load_dataset('qiaojin/PubMedQA', 'pqa_labeled', split='train').shuffle(seed=SPLIT_SEED)
+ pubmedqa = pubmed_all.select(range(min(PUBMEDQA_N, len(pubmed_all))))
+ pubmed_train = pubmed_all.select(range(len(pubmedqa), len(pubmed_all)))
+ 
+@@ -234,6 +238,8 @@
+ 
+ # 3. ICL apenas monta mensagens; nao treina pesos.
+ def select_demonstrations(task, question, shots):
++    if shots not in (0, 3, 5):
++        raise ValueError('Shots deve ser 0, 3 ou 5.')
+     if shots == 0:
+         return []
+     digest = hashlib.sha256(f'{SEED}|{task}|{question}'.encode('utf-8')).digest()
+@@ -242,6 +248,8 @@
+     return rng.sample(demo_pools[task], 5)[:shots]
+ 
+ def make_messages(task, question, user_text, system_prompt):
++    if CURRENT_CONDITION == 'fine-tuned' and CURRENT_SHOTS != 0:
++        raise ValueError('Fine-tuned deve ser avaliado sem demonstracoes.')
+     demos = select_demonstrations(task, question, CURRENT_SHOTS)
+     messages = [{'role': 'system', 'content': system_prompt}]
+     for demo in demos:
+@@ -250,6 +258,7 @@
+     messages.append({'role': 'user', 'content': user_text})
+     prompt_records[(CURRENT_CONDITION, task, question)] = {
+         'condition': CURRENT_CONDITION, 'task': task, 'question': question,
++        'seed': SEED, 'split_seed': SPLIT_SEED, 'persona': PERSONA,
+         'shots': CURRENT_SHOTS, 'demo_ids': [d['id'] for d in demos], 'messages': messages}
+     return messages
+ 
+--- recebido/modelos/medgemma.py
++++ revisado/modelos/medgemma.py
+@@ -23,6 +23,7 @@
+ from transformers.generation.streamers import BaseStreamer
+ from tqdm.auto import tqdm
+ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
++from prompts_medicos import configuracao
+ from registro import iniciar, etapa, registrar_trainer, salvar_resultado, salvar_tabelas, salvar_figuras, escrever_csv
+ iniciar('medgemma')
+ MODEL_ID = "unsloth/medgemma-1.5-4b-it"
+@@ -37,7 +38,10 @@
+ MAX_SEQ_LENGTH = 768  # comprimento de treinamento do tutorial
+ MODEL_CONTEXT_LENGTH = 16384  # limite para demonstracoes completas na inferencia
+ COMPARISON_SAMPLE_COUNT = 3
+-SEED = 42
++PROMPT_CONFIG = configuracao()
++SEED = PROMPT_CONFIG['seed']
++SPLIT_SEED = PROMPT_CONFIG['split_seed']
++PERSONA = PROMPT_CONFIG['persona']
+ LOAD_IN_4BIT = True
+ FINE_TUNING_EPOCHS = 5
+ LEARNING_RATE = 2e-5
+@@ -50,8 +54,8 @@
+ GEN_MAX_NEW_TOKENS = 160
+ MEDQA_N = 100
+ PUBMEDQA_N = 100
+-SYSTEM_PROMPT = "Answer the medical question directly in 2-4 factual sentences."
+-MCQ_SYSTEM_PROMPT = "You are a medical expert. Choose the single best option."
++SYSTEM_PROMPT = PROMPT_CONFIG['system_prompt']
++MCQ_SYSTEM_PROMPT = PROMPT_CONFIG['mcq_system_prompt']
+ PUBMEDQA_LETTER = {'yes': 'A', 'no': 'B', 'maybe': 'C'}
+ DATASET_ID = 'keivalya/MedQuad-MedicalQnADataset'
+ EXTENDED_DIR = f'{OUTPUT_DIR}-extended'
+@@ -181,18 +185,18 @@
+ filtered_dataset = filtered_dataset.select(indices)
+ if len(filtered_dataset) < SAMPLE_SIZE:
+     raise ValueError('Menos exemplos unicos do que SAMPLE_SIZE.')
+-subset = filtered_dataset.shuffle(seed=SEED).select(range(SAMPLE_SIZE))
+-split_dataset = subset.train_test_split(test_size=EVAL_SIZE, seed=SEED)
++subset = filtered_dataset.shuffle(seed=SPLIT_SEED).select(range(SAMPLE_SIZE))
++split_dataset = subset.train_test_split(test_size=EVAL_SIZE, seed=SPLIT_SEED)
+ train_dataset, eval_dataset = split_dataset['train'], split_dataset['test']
+ extended_eval = eval_dataset
+-comparison_examples = eval_dataset.shuffle(seed=SEED).select(range(COMPARISON_SAMPLE_COUNT))
++comparison_examples = eval_dataset.shuffle(seed=SPLIT_SEED).select(range(COMPARISON_SAMPLE_COUNT))
+ speed_questions = eval_dataset.select(range(min(SPEED_N, len(eval_dataset))))['Question']
+ 
+ # Benchmarks auxiliares: demonstracoes da propria tarefa, nunca do teste.
+-medqa = load_dataset('GBaker/MedQA-USMLE-4-options', split='test').shuffle(seed=SEED)
++medqa = load_dataset('GBaker/MedQA-USMLE-4-options', split='test').shuffle(seed=SPLIT_SEED)
+ medqa = medqa.select(range(min(MEDQA_N, len(medqa))))
+ medqa_train = load_dataset('GBaker/MedQA-USMLE-4-options', split='train')
+-pubmed_all = load_dataset('qiaojin/PubMedQA', 'pqa_labeled', split='train').shuffle(seed=SEED)
++pubmed_all = load_dataset('qiaojin/PubMedQA', 'pqa_labeled', split='train').shuffle(seed=SPLIT_SEED)
+ pubmedqa = pubmed_all.select(range(min(PUBMEDQA_N, len(pubmed_all))))
+ pubmed_train = pubmed_all.select(range(len(pubmedqa), len(pubmed_all)))
+ 
+@@ -227,6 +231,8 @@
+ 
+ # 3. ICL apenas monta mensagens; nao treina pesos.
+ def select_demonstrations(task, question, shots):
++    if shots not in (0, 3, 5):
++        raise ValueError('Shots deve ser 0, 3 ou 5.')
+     if shots == 0:
+         return []
+     digest = hashlib.sha256(f'{SEED}|{task}|{question}'.encode('utf-8')).digest()
+@@ -235,6 +241,8 @@
+     return rng.sample(demo_pools[task], 5)[:shots]
+ 
+ def make_messages(task, question, user_text, system_prompt):
++    if CURRENT_CONDITION == 'fine-tuned' and CURRENT_SHOTS != 0:
++        raise ValueError('Fine-tuned deve ser avaliado sem demonstracoes.')
+     demos = select_demonstrations(task, question, CURRENT_SHOTS)
+     messages = [{'role': 'system', 'content': system_prompt}]
+     for demo in demos:
+@@ -243,6 +251,7 @@
+     messages.append({'role': 'user', 'content': user_text})
+     prompt_records[(CURRENT_CONDITION, task, question)] = {
+         'condition': CURRENT_CONDITION, 'task': task, 'question': question,
++        'seed': SEED, 'split_seed': SPLIT_SEED, 'persona': PERSONA,
+         'shots': CURRENT_SHOTS, 'demo_ids': [d['id'] for d in demos], 'messages': messages}
+     return messages
+ 
+--- recebido/modelos/qwen35.py
++++ revisado/modelos/qwen35.py
+@@ -23,6 +23,7 @@
+ from transformers.generation.streamers import BaseStreamer
+ from tqdm.auto import tqdm
+ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
++from prompts_medicos import configuracao
+ from registro import iniciar, etapa, registrar_trainer, salvar_resultado, salvar_tabelas, salvar_figuras, escrever_csv
+ iniciar('qwen35')
+ MODEL_ID = "unsloth/Qwen3.5-4B"
+@@ -37,7 +38,10 @@
+ MAX_SEQ_LENGTH = 768  # comprimento de treinamento do tutorial
+ MODEL_CONTEXT_LENGTH = 16384  # limite para demonstracoes completas na inferencia
+ COMPARISON_SAMPLE_COUNT = 3
+-SEED = 42
++PROMPT_CONFIG = configuracao()
++SEED = PROMPT_CONFIG['seed']
++SPLIT_SEED = PROMPT_CONFIG['split_seed']
++PERSONA = PROMPT_CONFIG['persona']
+ LOAD_IN_4BIT = True
+ FINE_TUNING_EPOCHS = 5
+ LEARNING_RATE = 2e-5
+@@ -50,8 +54,8 @@
+ GEN_MAX_NEW_TOKENS = 160
+ MEDQA_N = 100
+ PUBMEDQA_N = 100
+-SYSTEM_PROMPT = "Answer the medical question directly in 2-4 factual sentences."
+-MCQ_SYSTEM_PROMPT = "You are a medical expert. Choose the single best option."
++SYSTEM_PROMPT = PROMPT_CONFIG['system_prompt']
++MCQ_SYSTEM_PROMPT = PROMPT_CONFIG['mcq_system_prompt']
+ PUBMEDQA_LETTER = {'yes': 'A', 'no': 'B', 'maybe': 'C'}
+ DATASET_ID = 'keivalya/MedQuad-MedicalQnADataset'
+ EXTENDED_DIR = f'{OUTPUT_DIR}-extended'
+@@ -181,18 +185,18 @@
+ filtered_dataset = filtered_dataset.select(indices)
+ if len(filtered_dataset) < SAMPLE_SIZE:
+     raise ValueError('Menos exemplos unicos do que SAMPLE_SIZE.')
+-subset = filtered_dataset.shuffle(seed=SEED).select(range(SAMPLE_SIZE))
+-split_dataset = subset.train_test_split(test_size=EVAL_SIZE, seed=SEED)
++subset = filtered_dataset.shuffle(seed=SPLIT_SEED).select(range(SAMPLE_SIZE))
++split_dataset = subset.train_test_split(test_size=EVAL_SIZE, seed=SPLIT_SEED)
+ train_dataset, eval_dataset = split_dataset['train'], split_dataset['test']
+ extended_eval = eval_dataset
+-comparison_examples = eval_dataset.shuffle(seed=SEED).select(range(COMPARISON_SAMPLE_COUNT))
++comparison_examples = eval_dataset.shuffle(seed=SPLIT_SEED).select(range(COMPARISON_SAMPLE_COUNT))
+ speed_questions = eval_dataset.select(range(min(SPEED_N, len(eval_dataset))))['Question']
+ 
+ # Benchmarks auxiliares: demonstracoes da propria tarefa, nunca do teste.
+-medqa = load_dataset('GBaker/MedQA-USMLE-4-options', split='test').shuffle(seed=SEED)
++medqa = load_dataset('GBaker/MedQA-USMLE-4-options', split='test').shuffle(seed=SPLIT_SEED)
+ medqa = medqa.select(range(min(MEDQA_N, len(medqa))))
+ medqa_train = load_dataset('GBaker/MedQA-USMLE-4-options', split='train')
+-pubmed_all = load_dataset('qiaojin/PubMedQA', 'pqa_labeled', split='train').shuffle(seed=SEED)
++pubmed_all = load_dataset('qiaojin/PubMedQA', 'pqa_labeled', split='train').shuffle(seed=SPLIT_SEED)
+ pubmedqa = pubmed_all.select(range(min(PUBMEDQA_N, len(pubmed_all))))
+ pubmed_train = pubmed_all.select(range(len(pubmedqa), len(pubmed_all)))
+ 
+@@ -227,6 +231,8 @@
+ 
+ # 3. ICL apenas monta mensagens; nao treina pesos.
+ def select_demonstrations(task, question, shots):
++    if shots not in (0, 3, 5):
++        raise ValueError('Shots deve ser 0, 3 ou 5.')
+     if shots == 0:
+         return []
+     digest = hashlib.sha256(f'{SEED}|{task}|{question}'.encode('utf-8')).digest()
+@@ -235,6 +241,8 @@
+     return rng.sample(demo_pools[task], 5)[:shots]
+ 
+ def make_messages(task, question, user_text, system_prompt):
++    if CURRENT_CONDITION == 'fine-tuned' and CURRENT_SHOTS != 0:
++        raise ValueError('Fine-tuned deve ser avaliado sem demonstracoes.')
+     demos = select_demonstrations(task, question, CURRENT_SHOTS)
+     messages = [{'role': 'system', 'content': system_prompt}]
+     for demo in demos:
+@@ -243,6 +251,7 @@
+     messages.append({'role': 'user', 'content': user_text})
+     prompt_records[(CURRENT_CONDITION, task, question)] = {
+         'condition': CURRENT_CONDITION, 'task': task, 'question': question,
++        'seed': SEED, 'split_seed': SPLIT_SEED, 'persona': PERSONA,
+         'shots': CURRENT_SHOTS, 'demo_ids': [d['id'] for d in demos], 'messages': messages}
+     return messages
+ 
+--- recebido/README.md
++++ revisado/README.md
+@@ -1,82 +1,124 @@
+-# Quatro scripts separados com o protocolo ICL
++# Experimentos médicos: zero-shot, 3-shot, 5-shot e fine-tuning
++
++Versão revisada do ZIP recebido em 14/10/2026. Os quatro scripts e as tarefas originais foram preservados.
++O executor termina todas as seeds/repetições de um modelo antes de iniciar o próximo:
++**Gemma4 → HuatuoGPT → MedGemma → Qwen3.5**. Cada execução usa um processo novo.
++
++## Executar
++
++No ambiente com Python, PyTorch CUDA, Unsloth, Transformers e TRL compatíveis com
++os checkpoints, instale as dependências auxiliares:
++```bash
++python -m pip install -r requirements.txt
++```
++O arquivo requirements.txt recebido não instala sozinho a pilha de treinamento.
++Siga a instalação oficial do Unsloth: https://unsloth.ai/docs/get-started/install
++Para checkpoints restritos, configure o acesso no Hugging Face antes da execução.
++Não atualize as bibliotecas durante uma campanha; após validar um piloto, salve
++`python -m pip freeze > ambiente_validado.txt`.
++
++Primeiro confira o plano (não baixa modelos e não utiliza GPU):
++```bash
++python rodar_todos.py --repeticoes 1 --seeds 42 123 2026 --persona clinico --planejar
++```
++
++Rode os quatro modelos, um por vez, com três seeds:
++```bash
++python rodar_todos.py --repeticoes 1 --seeds 42 123 2026 --persona clinico --saida campanha_clinico
++```
++São 12 processos e 12 fine-tunings: três execuções completas por modelo.
++Em cada processo: zero-shot, 3-shot, 5-shot, fine-tuning e avaliação sem demonstrações.
++As condições são braços independentes; a ordem é apenas operacional.
++
++Para um piloto completo com apenas um modelo:
++```bash
++python rodar_todos.py --modelos medgemma --repeticoes 1 --seeds 42 --saida piloto
++```
++
++Para dez repetições com a mesma seed, como no pacote recebido:
++```bash
++python rodar_todos.py --repeticoes 10 --seeds 42 --saida repetibilidade
++```
++O padrão ainda é dez repetições por seed e seed 42. Use explicitamente
++`--repeticoes 1` para executar uma vez por seed.
++
++## Prompts prontos e exemplos
++
++`prompts_medicos.py` contém as personas `clinico` (padrão), `biomedico` e
++`original` (instruções do ZIP sem persona adicional). Os textos completos estão
++também em `prompts_prontos.json`; fontes e adaptações em `PROMPTS_E_PROTOCOLO.md`.
++
++A persona escolhida permanece igual no zero-shot, 3-shot, 5-shot e no braço de
++fine-tuning. O formato de resposta também permanece igual dentro de cada tarefa.
++Para trocar a persona, use outra campanha:
++```bash
++python rodar_todos.py --repeticoes 1 --seeds 42 123 2026 --persona biomedico --saida campanha_biomedico
++```
++
++3-shot e 5-shot significam exatamente três e cinco pares pergunta/resposta no
++prompt do checkpoint original, sem adapters treinados neste experimento.
++Os exemplos vêm dos bancos de treino da respectiva tarefa; não são casos clínicos
++inventados ou copiados da internet. A seleção muda por pergunta e seed.
++Os três exemplos do 3-shot são os três primeiros da seleção de cinco, para uma
++comparação controlada. As perguntas de teste são excluídas dos bancos.
++
++## Seeds e treino
++
++- `--split-seed 42`: mantém o subconjunto, treino/teste e perguntas de benchmark fixos.
++- `--seeds 42 123 2026`: varia a seleção de demonstrações e a aleatoriedade do treino.
++- Todas as famílias usam a mesma lista de seeds e os mesmos dados.
++- Fine-tuning: novo carregamento do checkpoint original, LoRA, 5 épocas,
++  AdamW, lr 2e-5, microbatch 2 × acumulação 16 = batch efetivo 32 em uma GPU.
++- MedQuAD: 240 perguntas únicas filtradas, 192 de treino e 48 de teste.
++- Comprimento de treino 768; contexto de inferência 16.384; prompt longo gera erro
++  em vez de reduzir silenciosamente o número de demonstrações.
++
++Variação entre seeds inclui ICL e aleatoriedade do treino; não mede variação do
++split. Repetições da mesma seed não equivalem a seeds independentes.
++Não há garantia de determinismo numérico em todas as GPUs.
++
++## Resultados, falhas e retomada
++
++Cada execução fica em `campanha_clinico/modelo/run_01/`, com log e status.
++`campanha.json` fixa persona, seeds, split e repetições.
++`ambiente.json` registra os prompts, fontes, versões e hiperparâmetros.
++`registros/prompts.csv` registra mensagens, exemplos, seed, persona e condição.
++Os CSVs de respostas, métricas e os adapters continuam nos diretórios originais.
++
++O executor espera o processo terminar antes de iniciar o próximo. Para no primeiro
++erro e preserva resultados parciais. Não retoma o treinamento no meio de uma época.
++Para pular somente execuções completas, use o mesmo comando com `--retomar`.
++Mudanças de código, personas ou seeds exigem uma nova pasta de saída.
++Uma trava impede dois executores na mesma campanha.
++
++```bash
++python consolidar.py campanha_clinico
++python resumir.py campanha_clinico
++```
++A consolidação é automática após cada processo e inclui apenas execuções completas.
++O resumo mantém a análise entre execuções do pacote original. Para estudar seeds,
++prefira uma repetição por seed; não interprete repetições idênticas como amostras
++independentes. As cópias `registro__*` não devem ser somadas aos CSVs originais.
++
++## Escopo e validação
++
++Isto adapta o protocolo de comparação informado pelo usuário aos experimentos
++do ZIP: **MedQuAD (respostas abertas), MedQA e PubMedQA**.
++Não reproduz a classificação de especialidades MedPT Top-5/10/20, não troca
++Qwen3.5-4B por Qwen3-1.7B e não promete os F1 macro do paper.
++O fine-tuning usa LoRA do pacote, não atualização de todos os pesos.
++F1 por sobreposição textual e F1 macro de alternativas não são F1 de especialidade.
++
++11 testes sem GPU passaram, com processos artificiais reais para verificar
++sequência, isolamento, seeds, retomada, erros e separação ICL/FT.
++Não foram executados downloads, inferência ou treinamento de LLMs nesta revisão.
++
++```bash
++python -m unittest discover -s testes -v
++```
++
++`originais/` está intacto. `RELATORIO.md`, `RELATORIO.html` e os arquivos de
++auditoria anteriores descrevem a versão recebida, inclusive sua seed fixa e
++prompts antigos; são históricos. Para esta versão, consulte este README,
++`PROMPTS_E_PROTOCOLO.md` e `auditoria/REVISAO_PERSONAS_V3.md`.
+ 
+-Cada arquivo em `modelos/` executa, nesta ordem:
+-
+-1. Zero-shot: checkpoint original, sem treino ou demonstrações.
+-2. 3-shot: checkpoint original, três exemplos resolvidos no prompt, sem treino.
+-3. 5-shot: checkpoint original, cinco exemplos resolvidos no prompt, sem treino.
+-4. Fine-tuned: novo carregamento do original, LoRA por cinco épocas e avaliação sem demonstrações.
+-
+-Os antigos regimes 3x/5x e o treino inicial de uma época foram removidos. Os modelos continuam em `gemma4.py`, `huatuogpt.py`, `medgemma.py` e `qwen35.py`. Mantenha o pacote inteiro para o módulo auxiliar `registro.py` ficar acessível.
+-
+-## Parâmetros
+-
+-- Learning rate: `2e-5`; otimizador: `adamw_torch`; épocas: `5`; `max_steps=-1`.
+-- Batch efetivo 32 em uma GPU: microbatch 2 × acumulação 16.
+-- MedQuAD: 240 perguntas únicas filtradas; 192 treino / 48 teste (80/20).
+-- Demonstrações apenas do treino; 3-shot usa as três primeiras da seleção de cinco.
+-- Seed 42 fixa. As dez repetições medem repetibilidade; não são dez seeds diferentes.
+-- Treino até 768 tokens; inferência até 16.384, sem cortar demonstrações silenciosamente.
+-
+-Isto adapta as estratégias do trecho às tarefas originais. Não recria a classificação Top-5/10/20 de especialidades do artigo. A macro adicionada aos benchmarks usa alternativas como classes. Leia `RELATORIO.html` ou `RELATORIO.md` para a explicação e as diferenças.
+-
+-## Instalação e piloto
+-
+-Instale primeiro o PyTorch CUDA e o Unsloth Core conforme o sistema e a GPU. Siga a [documentação oficial](https://unsloth.ai/docs/get-started/install/windows-installation). Depois, no terminal dentro desta pasta:
+-
+-```bash
+-python -m pip install -r requirements.txt
+-python -c "from unsloth import FastModel; import torch; print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0))"
+-python rodar_todos.py --planejar
+-python rodar_todos.py --modelos medgemma --repeticoes 1 --saida piloto_icl
+-python -m pip freeze > ambiente_validado.txt
+-```
+-
+-O piloto é completo, com as quatro condições. Não há treinamento de LLM validado neste ambiente. Para acesso a checkpoints restritos, use `hf auth login` ou `HF_TOKEN` antes da execução.
+-
+-## Dez execuções de cada modelo
+-
+-Execute um comando por vez; você escolhe quando trocar de família:
+-
+-```bash
+-python rodar_todos.py --modelos gemma4 --repeticoes 10 --saida campanha_icl
+-python rodar_todos.py --modelos huatuogpt --repeticoes 10 --saida campanha_icl
+-python rodar_todos.py --modelos medgemma --repeticoes 10 --saida campanha_icl
+-python rodar_todos.py --modelos qwen35 --repeticoes 10 --saida campanha_icl
+-```
+-
+-Para automatizar a troca entre todas: `python rodar_todos.py --repeticoes 10 --saida campanha_icl`.
+-
+-Para uma única execução direta: `python modelos/medgemma.py`. Ela salva CSVs em uma pasta datada. Prefira o executor para também ter log completo, status e consolidação automática.
+-
+-## Resultados
+-
+-Cada execução fica em `campanha_icl/modelo/run_01/`. As barras tqdm mostram progresso e os logs indicam a condição atual.
+-
+-- `execucao.log`, `status.json`, `ambiente.json`: execução e versões.
+-- `*-benchmark/benchmark_summary.csv`: velocidade, acurácia e precision/recall/F1 macro.
+-- `*-benchmark/speed_per_question.csv`: inclui lista JSON `token_times` e `prompt_tokens`.
+-- `*-benchmark/precision_per_question.csv`: respostas de múltipla escolha e acertos.
+-- `*-extended/answers_per_question.csv`: respostas MedQuAD e todas as métricas por pergunta.
+-- `*-extended/metrics_summary.csv`: agregação de MedQuAD por condição e dados de treinamento.
+-- `registros/treino_fine-tuned_steps.csv`: eventos de log, a cada dez atualizações quando aplicável.
+-- `registros/treino_fine-tuned_metricas.csv`: métricas finais do Trainer.
+-- `registros/prompts.csv`: demonstrações e mensagens por condição, tarefa e pergunta.
+-- `registros/dados_*.csv`: conjuntos e bancos de demonstrações.
+-- `figuras/`: comparação das quatro condições.
+-- `consolidado/`: somente execuções completas, identificadas por modelo e repetição.
+-
+-As cópias `registro__*` não devem ser somadas às linhas dos CSVs originais.
+-
+-```bash
+-python consolidar.py campanha_icl
+-python resumir.py campanha_icl
+-```
+-
+-O resumo calcula as diferenças `3-shot − zero-shot`, `5-shot − zero-shot` e `fine-tuned − zero-shot`, além de médias e desvios entre execuções. A documentação distingue os intervalos entre perguntas dos intervalos entre repetições.
+-
+-## Falhas e retomada
+-
+-Use uma pasta nova para este protocolo: não reutilize uma campanha 3x/5x antiga. `--retomar` pula apenas execuções concluídas com código idêntico. Pastas com erro não são sobrescritas; use outra `--saida` para repetir. Não há retomada automática no meio do treinamento. A campanha para no primeiro erro, preservando logs e resultados parciais. Uma trava impede dois executores simultâneos na mesma campanha.
+-
+-Os originais estão em `originais/`; diffs e hashes em `auditoria/`. Não há notebook de fine-tuning Phi-4 no material recebido.
+--- recebido/registro.py
++++ revisado/registro.py
+@@ -1,123 +1,124 @@
+-"""Somente registro e progresso. Nao altera pesos, loss ou hiperparametros."""
+-import csv
+-import json
+-import os
+-import platform
+-import subprocess
+-import sys
+-from datetime import datetime, timezone
+-from importlib import metadata
+-from pathlib import Path
+-
+-
+-def escrever_csv(path, rows):
+-    rows = list(rows)
+-    if not rows:
+-        return
+-    path = Path(path)
+-    path.parent.mkdir(parents=True, exist_ok=True)
+-    fields = list(dict.fromkeys(k for row in rows for k in row))
+-    temp = path.with_suffix(path.suffix + '.tmp')
+-    with temp.open('w', newline='', encoding='utf-8-sig') as f:
+-        writer = csv.DictWriter(f, fieldnames=fields)
+-        writer.writeheader()
+-        for row in rows:
+-            writer.writerow({k: json.dumps(v, ensure_ascii=False, default=str)
+-                             if isinstance(v, (list, dict, tuple)) else v
+-                             for k, v in row.items()})
+-    temp.replace(path)
+-
+-
+-def iniciar(modelo):
+-    # Ao chamar o modelo diretamente, cria uma pasta nova automaticamente.
+-    if not os.getenv('LLM_RUN_DIR'):
+-        path = Path.cwd() / 'resultados' / modelo / datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+-        path.mkdir(parents=True, exist_ok=False)
+-        os.chdir(path)
+-    os.environ.setdefault('MPLBACKEND', 'Agg')
+-    print(f'\nModelo: {modelo} | resultados: {Path.cwd()}', flush=True)
+-    versions = {}
+-    for name in ['torch', 'unsloth', 'unsloth_zoo', 'transformers', 'trl', 'peft',
+-                 'bitsandbytes', 'datasets', 'accelerate', 'tqdm', 'numpy', 'pandas']:
+-        try:
+-            versions[name] = metadata.version(name)
+-        except metadata.PackageNotFoundError:
+-            versions[name] = 'nao instalado'
+-    info = {'modelo': modelo, 'inicio_utc': datetime.now(timezone.utc).isoformat(),
+-            'python': sys.version, 'plataforma': platform.platform(), 'versoes': versions,
+-            'seed': 42, 'max_steps': -1, 'protocolo': 'icl_0_3_5_ft5_v2',
+-            'condicoes': ['zero-shot', '3-shot', '5-shot', 'fine-tuned'],
+-            'learning_rate': 2e-5, 'fine_tuning_epochs': 5,
+-            'optimizer': 'adamw_torch', 'micro_batch_size': 2,
+-            'gradient_accumulation_steps': 16, 'effective_batch_size': 32}
+-    Path('ambiente.json').write_text(json.dumps(info, indent=2), encoding='utf-8')
+-    try:
+-        gpu = subprocess.run(['nvidia-smi'], capture_output=True, text=True, timeout=15)
+-        Path('nvidia-smi.txt').write_text(gpu.stdout + gpu.stderr, encoding='utf-8')
+-    except (OSError, subprocess.TimeoutExpired) as exc:
+-        Path('nvidia-smi.txt').write_text(str(exc), encoding='utf-8')
+-
+-
+-def etapa(numero, descricao):
+-    print(f'\n[ETAPA {numero}] {descricao}', flush=True)
+-
+-
+-def registrar_trainer(trainer, nome):
+-    # Importacao tardia: o notebook importa Unsloth antes de Transformers.
+-    from transformers import TrainerCallback
+-
+-    class RegistroCSV(TrainerCallback):
+-        def on_log(self, args, state, control, logs=None, **kwargs):
+-            escrever_csv(f'registros/treino_{nome}_steps.csv', state.log_history)
+-
+-        def on_train_end(self, args, state, control, **kwargs):
+-            escrever_csv(f'registros/treino_{nome}_steps.csv', state.log_history)
+-
+-    trainer.add_callback(RegistroCSV())
+-    Path('registros').mkdir(exist_ok=True)
+-    # Configuracao resolvida, inclusive max_steps=-1 e numero de epocas.
+-    Path(f'registros/config_{nome}.json').write_text(trainer.args.to_json_string(), encoding='utf-8')
+-
+-
+-def salvar_resultado(result, nome):
+-    escrever_csv(f'registros/treino_{nome}_metricas.csv',
+-                 [{'training_loss': result.training_loss, 'global_step': result.global_step,
+-                   **result.metrics}])
+-
+-
+-def salvar_tabelas(namespace):
+-    # Preserva todas as colunas, inclusive tempos individuais dos tokens.
+-    import pandas as pd
+-    for name in ['baseline_previews', 'fine_tuned_previews', 'speed_rows', 'precision_rows', 'all_rows']:
+-        rows = namespace.get(name)
+-        if isinstance(rows, list) and rows:
+-            escrever_csv(f'registros/{name}.csv', rows)
+-    for name in ['speed_df', 'precision_df', 'bench_summary', 'results_df', 'summary_df']:
+-        df = namespace.get(name)
+-        if isinstance(df, pd.DataFrame):
+-            if df.index.name:
+-                df = df.reset_index()
+-            escrever_csv(f'registros/{name}.csv', df.to_dict('records'))
+-    dados = []
+-    for name in ['train_dataset', 'eval_dataset', 'comparison_examples', 'extended_eval', 'medqa', 'pubmedqa']:
+-        ds = namespace.get(name)
+-        if ds is not None:
+-            # Permite conferir se modelos e repeticoes receberam as mesmas perguntas.
+-            rows = [dict(row) for row in ds]
+-            escrever_csv(f'registros/dados_{name}.csv', rows)
+-            dados.append({'conjunto': name, 'n': len(rows), 'fingerprint': getattr(ds, '_fingerprint', '')})
+-    escrever_csv('registros/datasets.csv', dados)
+-    model = namespace.get('model')
+-    if model is not None and hasattr(model, 'config'):
+-        Path('registros/model_config.json').write_text(model.config.to_json_string(), encoding='utf-8')
+-
+-
+-def salvar_figuras(celula):
+-    if 'matplotlib.pyplot' not in sys.modules:
+-        return
+-    plt = sys.modules['matplotlib.pyplot']
+-    if plt.get_fignums():
+-        Path('figuras').mkdir(exist_ok=True)
+-        for number in plt.get_fignums():
+-            plt.figure(number).savefig(f'figuras/celula_{celula}_figura_{number}.png', dpi=130, bbox_inches='tight')
+-        plt.close('all')
++"""Somente registro e progresso. Nao altera pesos, loss ou hiperparametros."""
++import csv
++import json
++import os
++import platform
++import subprocess
++import sys
++from datetime import datetime, timezone
++from importlib import metadata
++from pathlib import Path
++from prompts_medicos import configuracao
++
++
++def escrever_csv(path, rows):
++    rows = list(rows)
++    if not rows:
++        return
++    path = Path(path)
++    path.parent.mkdir(parents=True, exist_ok=True)
++    fields = list(dict.fromkeys(k for row in rows for k in row))
++    temp = path.with_suffix(path.suffix + '.tmp')
++    with temp.open('w', newline='', encoding='utf-8-sig') as f:
++        writer = csv.DictWriter(f, fieldnames=fields)
++        writer.writeheader()
++        for row in rows:
++            writer.writerow({k: json.dumps(v, ensure_ascii=False, default=str)
++                             if isinstance(v, (list, dict, tuple)) else v
++                             for k, v in row.items()})
++    temp.replace(path)
++
++
++def iniciar(modelo):
++    # Ao chamar o modelo diretamente, cria uma pasta nova automaticamente.
++    if not os.getenv('LLM_RUN_DIR'):
++        path = Path.cwd() / 'resultados' / modelo / datetime.now().strftime('%Y%m%d_%H%M%S_%f')
++        path.mkdir(parents=True, exist_ok=False)
++        os.chdir(path)
++    os.environ.setdefault('MPLBACKEND', 'Agg')
++    print(f'\nModelo: {modelo} | resultados: {Path.cwd()}', flush=True)
++    versions = {}
++    for name in ['torch', 'unsloth', 'unsloth_zoo', 'transformers', 'trl', 'peft',
++                 'bitsandbytes', 'datasets', 'accelerate', 'tqdm', 'numpy', 'pandas']:
++        try:
++            versions[name] = metadata.version(name)
++        except metadata.PackageNotFoundError:
++            versions[name] = 'nao instalado'
++    info = {'modelo': modelo, 'inicio_utc': datetime.now(timezone.utc).isoformat(),
++            'python': sys.version, 'plataforma': platform.platform(), 'versoes': versions,
++            **configuracao(), 'max_steps': -1,
++            'condicoes': ['zero-shot', '3-shot', '5-shot', 'fine-tuned'],
++            'learning_rate': 2e-5, 'fine_tuning_epochs': 5,
++            'optimizer': 'adamw_torch', 'micro_batch_size': 2,
++            'gradient_accumulation_steps': 16, 'effective_batch_size': 32}
++    Path('ambiente.json').write_text(json.dumps(info, indent=2), encoding='utf-8')
++    try:
++        gpu = subprocess.run(['nvidia-smi'], capture_output=True, text=True, timeout=15)
++        Path('nvidia-smi.txt').write_text(gpu.stdout + gpu.stderr, encoding='utf-8')
++    except (OSError, subprocess.TimeoutExpired) as exc:
++        Path('nvidia-smi.txt').write_text(str(exc), encoding='utf-8')
++
++
++def etapa(numero, descricao):
++    print(f'\n[ETAPA {numero}] {descricao}', flush=True)
++
++
++def registrar_trainer(trainer, nome):
++    # Importacao tardia: o notebook importa Unsloth antes de Transformers.
++    from transformers import TrainerCallback
++
++    class RegistroCSV(TrainerCallback):
++        def on_log(self, args, state, control, logs=None, **kwargs):
++            escrever_csv(f'registros/treino_{nome}_steps.csv', state.log_history)
++
++        def on_train_end(self, args, state, control, **kwargs):
++            escrever_csv(f'registros/treino_{nome}_steps.csv', state.log_history)
++
++    trainer.add_callback(RegistroCSV())
++    Path('registros').mkdir(exist_ok=True)
++    # Configuracao resolvida, inclusive max_steps=-1 e numero de epocas.
++    Path(f'registros/config_{nome}.json').write_text(trainer.args.to_json_string(), encoding='utf-8')
++
++
++def salvar_resultado(result, nome):
++    escrever_csv(f'registros/treino_{nome}_metricas.csv',
++                 [{'training_loss': result.training_loss, 'global_step': result.global_step,
++                   **result.metrics}])
++
++
++def salvar_tabelas(namespace):
++    # Preserva todas as colunas, inclusive tempos individuais dos tokens.
++    import pandas as pd
++    for name in ['baseline_previews', 'fine_tuned_previews', 'speed_rows', 'precision_rows', 'all_rows']:
++        rows = namespace.get(name)
++        if isinstance(rows, list) and rows:
++            escrever_csv(f'registros/{name}.csv', rows)
++    for name in ['speed_df', 'precision_df', 'bench_summary', 'results_df', 'summary_df']:
++        df = namespace.get(name)
++        if isinstance(df, pd.DataFrame):
++            if df.index.name:
++                df = df.reset_index()
++            escrever_csv(f'registros/{name}.csv', df.to_dict('records'))
++    dados = []
++    for name in ['train_dataset', 'eval_dataset', 'comparison_examples', 'extended_eval', 'medqa', 'pubmedqa']:
++        ds = namespace.get(name)
++        if ds is not None:
++            # Permite conferir se modelos e repeticoes receberam as mesmas perguntas.
++            rows = [dict(row) for row in ds]
++            escrever_csv(f'registros/dados_{name}.csv', rows)
++            dados.append({'conjunto': name, 'n': len(rows), 'fingerprint': getattr(ds, '_fingerprint', '')})
++    escrever_csv('registros/datasets.csv', dados)
++    model = namespace.get('model')
++    if model is not None and hasattr(model, 'config'):
++        Path('registros/model_config.json').write_text(model.config.to_json_string(), encoding='utf-8')
++
++
++def salvar_figuras(celula):
++    if 'matplotlib.pyplot' not in sys.modules:
++        return
++    plt = sys.modules['matplotlib.pyplot']
++    if plt.get_fignums():
++        Path('figuras').mkdir(exist_ok=True)
++        for number in plt.get_fignums():
++            plt.figure(number).savefig(f'figuras/celula_{celula}_figura_{number}.png', dpi=130, bbox_inches='tight')
++        plt.close('all')
+--- recebido/resumir.py
++++ revisado/resumir.py
+@@ -1,59 +1,59 @@
+-"""Resumo entre repeticoes completas, mantendo cada protocolo separado."""
+-import argparse
+-from pathlib import Path
+-import numpy as np
+-import pandas as pd
+-from scipy.stats import t
+-
+-
+-def resumo(df, keys, value):
+-    rows = []
+-    for key, group in df.groupby(keys, dropna=False):
+-        values = pd.to_numeric(group[value], errors='coerce')
+-        values = values[np.isfinite(values)]
+-        n = len(values)
+-        if not n:
+-            continue
+-        mean = values.mean()
+-        sd = values.std(ddof=1) if n > 1 else float('nan')
+-        half = t.ppf(.975, n - 1) * sd / np.sqrt(n) if n > 1 else float('nan')
+-        key = key if isinstance(key, tuple) else (key,)
+-        rows.append({**dict(zip(keys, key)), 'n_execucoes': n, 'media': mean, 'desvio_padrao': sd,
+-                     'minimo': values.min(), 'maximo': values.max(),
+-                     'ic95_media_inferior': mean - half, 'ic95_media_superior': mean + half})
+-    return pd.DataFrame(rows)
+-
+-
+-def main(root):
+-    root = Path(root) / 'consolidado'
+-    path = root / 'benchmark_summary.csv'
+-    if path.exists():
+-        df = pd.read_csv(path)
+-        keys = ['exec_modelo', 'category', 'metric', 'condition']
+-        resumo(df, keys, 'mean').to_csv(root / 'resumo_entre_execucoes.csv', index=False)
+-        paired = df.pivot(index=['exec_modelo', 'exec_repeticao', 'category', 'metric'], columns='condition', values='mean')
+-        comparisons = []
+-        for condition in ['3-shot', '5-shot', 'fine-tuned']:
+-            if {'zero-shot', condition} <= set(paired.columns):
+-                part = paired[[condition, 'zero-shot']].dropna().copy()
+-                part['delta'] = part[condition] - part['zero-shot']
+-                part['comparacao'] = condition + ' - zero-shot'
+-                comparisons.append(part.reset_index()[['exec_modelo', 'exec_repeticao', 'category', 'metric', 'comparacao', 'delta']])
+-        if comparisons:
+-            deltas = pd.concat(comparisons, ignore_index=True)
+-            deltas.to_csv(root / 'deltas_pareados.csv', index=False)
+-            resumo(deltas, ['exec_modelo', 'category', 'metric', 'comparacao'], 'delta').to_csv(root / 'resumo_deltas.csv', index=False)
+-    path = root / 'metrics_summary.csv'
+-    if path.exists():
+-        df = pd.read_csv(path)
+-        identifiers = ['exec_modelo', 'exec_repeticao', 'exec_seed', 'exec_origem', 'regime']
+-        values = [c for c in df if c not in identifiers]
+-        long = df.melt(id_vars=identifiers, value_vars=values, var_name='metric', value_name='value')
+-        resumo(long, ['exec_modelo', 'regime', 'metric'], 'value').to_csv(root / 'resumo_medquad_condicoes.csv', index=False)
+-    print(f'Resumos gravados em {root}. IC entre repeticoes nao substitui incerteza entre perguntas.')
+-
+-
+-if __name__ == '__main__':
+-    parser = argparse.ArgumentParser(description=__doc__)
+-    parser.add_argument('pasta', type=Path, nargs='?', default=Path('resultados_icl'))
+-    main(parser.parse_args().pasta)
++"""Resumo entre repeticoes completas, mantendo cada protocolo separado."""
++import argparse
++from pathlib import Path
++import numpy as np
++import pandas as pd
++from scipy.stats import t
++
++
++def resumo(df, keys, value):
++    rows = []
++    for key, group in df.groupby(keys, dropna=False):
++        values = pd.to_numeric(group[value], errors='coerce')
++        values = values[np.isfinite(values)]
++        n = len(values)
++        if not n:
++            continue
++        mean = values.mean()
++        sd = values.std(ddof=1) if n > 1 else float('nan')
++        half = t.ppf(.975, n - 1) * sd / np.sqrt(n) if n > 1 else float('nan')
++        key = key if isinstance(key, tuple) else (key,)
++        rows.append({**dict(zip(keys, key)), 'n_execucoes': n, 'media': mean, 'desvio_padrao': sd,
++                     'minimo': values.min(), 'maximo': values.max(),
++                     'ic95_media_inferior': mean - half, 'ic95_media_superior': mean + half})
++    return pd.DataFrame(rows)
++
++
++def main(root):
++    root = Path(root) / 'consolidado'
++    path = root / 'benchmark_summary.csv'
++    if path.exists():
++        df = pd.read_csv(path)
++        keys = ['exec_modelo', 'category', 'metric', 'condition']
++        resumo(df, keys, 'mean').to_csv(root / 'resumo_entre_execucoes.csv', index=False)
++        paired = df.pivot(index=['exec_modelo', 'exec_repeticao', 'category', 'metric'], columns='condition', values='mean')
++        comparisons = []
++        for condition in ['3-shot', '5-shot', 'fine-tuned']:
++            if {'zero-shot', condition} <= set(paired.columns):
++                part = paired[[condition, 'zero-shot']].dropna().copy()
++                part['delta'] = part[condition] - part['zero-shot']
++                part['comparacao'] = condition + ' - zero-shot'
++                comparisons.append(part.reset_index()[['exec_modelo', 'exec_repeticao', 'category', 'metric', 'comparacao', 'delta']])
++        if comparisons:
++            deltas = pd.concat(comparisons, ignore_index=True)
++            deltas.to_csv(root / 'deltas_pareados.csv', index=False)
++            resumo(deltas, ['exec_modelo', 'category', 'metric', 'comparacao'], 'delta').to_csv(root / 'resumo_deltas.csv', index=False)
++    path = root / 'metrics_summary.csv'
++    if path.exists():
++        df = pd.read_csv(path)
++        identifiers = ['exec_modelo', 'exec_repeticao', 'exec_seed', 'exec_split_seed', 'exec_persona', 'exec_origem', 'regime']
++        values = [c for c in df if c not in identifiers]
++        long = df.melt(id_vars=identifiers, value_vars=values, var_name='metric', value_name='value')
++        resumo(long, ['exec_modelo', 'regime', 'metric'], 'value').to_csv(root / 'resumo_medquad_condicoes.csv', index=False)
++    print(f'Resumos gravados em {root}. IC entre repeticoes nao substitui incerteza entre perguntas.')
++
++
++if __name__ == '__main__':
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument('pasta', type=Path, nargs='?', default=Path('resultados_icl'))
++    main(parser.parse_args().pasta)
+--- recebido/rodar_todos.py
++++ revisado/rodar_todos.py
+@@ -1,4 +1,4 @@
+-"""Roda 10 vezes cada modelo, em sequencia e em processos novos."""
++"""Executa um modelo por vez, em processos isolados, com ICL e FT separados."""
+ import argparse
+ import hashlib
+ import json
+@@ -9,71 +9,121 @@
+ from datetime import datetime, timezone
+ from pathlib import Path
+ 
+-from registro import escrever_csv
+ from consolidar import consolidar
++from prompts_medicos import PERSONAS
+ 
+ BASE = Path(__file__).resolve().parent
+ MODELOS = ['gemma4', 'huatuogpt', 'medgemma', 'qwen35']
++PROTOCOLO = 'icl_0_3_5_ft5_personas_v3'
++
++
++def codigo_sha256(script):
++    digest = hashlib.sha256()
++    for path in [script, *sorted(BASE.glob('*.py'))]:
++        digest.update(path.name.encode('utf-8'))
++        digest.update(path.read_bytes())
++    return digest.hexdigest()
+ 
+ 
+ def main():
+     parser = argparse.ArgumentParser(description=__doc__)
+     parser.add_argument('--modelos', nargs='+', choices=MODELOS, default=MODELOS)
+-    parser.add_argument('--repeticoes', type=int, default=10)
+-    parser.add_argument('--saida', type=Path, default=Path('resultados_icl'))
+-    parser.add_argument('--retomar', action='store_true', help='Pula apenas execucoes concluidas com o mesmo codigo.')
+-    parser.add_argument('--planejar', action='store_true', help='Mostra a ordem sem carregar GPU ou modelos.')
++    parser.add_argument('--repeticoes', type=int, default=10,
++                        help='Repeticoes de cada seed em cada modelo (padrao: 10).')
++    parser.add_argument('--seeds', type=int, nargs='+', default=[42],
++                        help='Seeds de demonstracoes e treino. Ex.: 42 123 2026.')
++    parser.add_argument('--split-seed', type=int, default=42,
++                        help='Seed fixa dos conjuntos de dados, independente das seeds de execucao.')
++    parser.add_argument('--persona', choices=list(PERSONAS), default='clinico')
++    parser.add_argument('--saida', type=Path, default=Path('resultados_icl_personas'))
++    parser.add_argument('--retomar', action='store_true',
++                        help='Pula somente execucoes completas com codigo e configuracao identicos.')
++    parser.add_argument('--planejar', action='store_true',
++                        help='Mostra a ordem sem carregar modelos, dados ou GPU.')
+     args = parser.parse_args()
+     if args.repeticoes < 1:
+         parser.error('--repeticoes precisa ser maior que zero')
+     if len(args.modelos) != len(set(args.modelos)):
+         parser.error('Nao repita nomes em --modelos')
+-    jobs = [(model, run) for model in args.modelos for run in range(1, args.repeticoes + 1)]
++    if len(args.seeds) != len(set(args.seeds)):
++        parser.error('Nao repita seeds; para repetibilidade use --repeticoes')
++    if any(not 0 <= s < 2**32 for s in [*args.seeds, args.split_seed]):
++        parser.error('Seeds devem estar entre 0 e 2**32 - 1')
++    jobs = []
++    for model in args.modelos:
++        run = 0
++        for seed in args.seeds:
++            for repeticao_seed in range(1, args.repeticoes + 1):
++                run += 1
++                jobs.append((model, run, seed, repeticao_seed))
++    campaign = dict(protocolo=PROTOCOLO, seeds=args.seeds, split_seed=args.split_seed,
++                    persona=args.persona, repeticoes_por_seed=args.repeticoes)
+     if args.planejar:
+-        for model, run in jobs:
+-            print(f'{model:12} repeticao {run:02}/{args.repeticoes} | zero-shot -> 3-shot -> 5-shot -> FT 5 epocas | lr=2e-5')
++        for model, run, seed, rep in jobs:
++            print(f'{model:12} run_{run:02} | seed={seed} rep={rep} | '
++                  f'persona={args.persona} split_seed={args.split_seed} | '
++                  'zero-shot -> 3-shot -> 5-shot -> FT 5 epocas')
++        print(f'Total: {len(jobs)} processos sequenciais; {len(jobs)} fine-tunings.')
+         return 0
++
+     from tqdm.auto import tqdm
+     root = args.saida.resolve()
+     root.mkdir(parents=True, exist_ok=True)
+-    for old_status in root.glob('*/run_*/status.json'):
+-        previous = json.loads(old_status.read_text(encoding='utf-8'))
+-        if previous.get('protocolo') != 'icl_0_3_5_ft5_v2':
+-            parser.error('Esta pasta possui outro protocolo. Escolha uma --saida nova para ICL.')
+-    # Uma trava evita dois processos escrevendo na mesma campanha.
+     lock = root / '.em_execucao'
+     try:
+         lock.touch(exist_ok=False)
+     except FileExistsError:
+-        parser.error(f'Campanha em uso: {lock}. Se houve interrupcao forcada, confirme que nao ha processo ativo antes de remover a trava.')
++        parser.error(f'Campanha em uso: {lock}. Antes de remover uma trava antiga, '
++                     'confirme que nao ha executor ativo.')
+     failures = 0
+     try:
+-        for model, run in tqdm(jobs, desc='Execucoes completas', unit='execucao'):
++        manifest = root / 'campanha.json'
++        if manifest.exists():
++            previous = json.loads(manifest.read_text(encoding='utf-8'))
++            if previous != campaign:
++                raise ValueError('Configuracao da campanha mudou (seeds, split, persona ou repeticoes). '
++                                 'Use outra --saida.')
++        elif list(root.glob('*/run_*/status.json')):
++            raise ValueError('Campanha sem manifesto desta versao. Use outra --saida.')
++        else:
++            manifest.write_text(json.dumps(campaign, indent=2), encoding='utf-8')
++        for old_status in root.glob('*/run_*/status.json'):
++            previous = json.loads(old_status.read_text(encoding='utf-8'))
++            if previous.get('protocolo') != PROTOCOLO:
++                raise ValueError('Outro protocolo encontrado. Use outra --saida.')
++
++        for model, run, seed, repeticao_seed in tqdm(jobs, desc='Execucoes completas', unit='execucao'):
+             script = BASE / 'modelos' / f'{model}.py'
+-            digest = hashlib.sha256(script.read_bytes() + (BASE / 'registro.py').read_bytes()).hexdigest()
++            digest = codigo_sha256(script)
+             folder = root / model / f'run_{run:02}'
+             status_file = folder / 'status.json'
++            expected = dict(modelo=model, repeticao=run, seed=seed, split_seed=args.split_seed,
++                            persona=args.persona, repeticao_seed=repeticao_seed,
++                            protocolo=PROTOCOLO, codigo_sha256=digest)
+             if folder.exists():
+                 status = json.loads(status_file.read_text(encoding='utf-8')) if status_file.exists() else {}
+-                if args.retomar and status.get('status') == 'ok' and status.get('codigo_sha256') == digest:
++                if (args.retomar and status.get('status') == 'ok'
++                        and all(status.get(k) == v for k, v in expected.items())):
+                     print(f'Ja concluido: {model} run_{run:02}', flush=True)
+                     continue
+-                # Nunca sobrescreve execucao parcial nem mistura codigos diferentes.
+-                raise FileExistsError(f'{folder} ja existe. Use outra --saida; --retomar pula somente resultados completos do mesmo codigo.')
++                raise FileExistsError(f'{folder} ja existe. Use outra --saida; --retomar pula '
++                                      'somente resultados completos do mesmo codigo e configuracao.')
+             folder.mkdir(parents=True)
+-            info = {'modelo': model, 'repeticao': run, 'seed': 42, 'max_steps': -1,
+-                    'protocolo': 'icl_0_3_5_ft5_v2',
+-                    'codigo_sha256': digest, 'inicio_utc': datetime.now(timezone.utc).isoformat(), 'status': 'rodando'}
++            info = dict(expected, max_steps=-1, inicio_utc=datetime.now(timezone.utc).isoformat(),
++                        status='rodando')
+             status_file.write_text(json.dumps(info, indent=2), encoding='utf-8')
+-            env = dict(os.environ, LLM_RUN_DIR=str(folder), PYTHONUNBUFFERED='1', PYTHONIOENCODING='utf-8', MPLBACKEND='Agg')
++            env = dict(os.environ, LLM_RUN_DIR=str(folder), LLM_SEED=str(seed),
++                       LLM_SPLIT_SEED=str(args.split_seed), LLM_PERSONA=args.persona,
++                       PYTHONUNBUFFERED='1', PYTHONIOENCODING='utf-8', MPLBACKEND='Agg')
+             start = time.perf_counter()
+-            print(f'\n=== {model} | repeticao {run}/{args.repeticoes} ===', flush=True)
++            print(f'\n=== {model} | run_{run:02} | seed={seed} | persona={args.persona} ===', flush=True)
+             process = None
+             try:
+                 with (folder / 'execucao.log').open('w', encoding='utf-8') as log:
+-                    process = subprocess.Popen([sys.executable, '-u', str(script)], cwd=folder, env=env,
+-                                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+-                                               text=True, encoding='utf-8', errors='replace', bufsize=1)
++                    process = subprocess.Popen(
++                        [sys.executable, '-u', str(script)], cwd=folder, env=env,
++                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
++                        text=True, encoding='utf-8', errors='replace', bufsize=1)
+                     for line in process.stdout:
+                         print(line, end='', flush=True)
+                         log.write(line)
+@@ -98,7 +148,7 @@
+                 consolidar(root)
+             if info['status'] != 'ok':
+                 failures += 1
+-                print(f'Falha em {model}; veja {folder / "execucao.log"}. Campanha parada para evitar repetir o mesmo erro.')
++                print(f'Falha em {model}; veja {folder / "execucao.log"}. Campanha parada.')
+                 break
+     finally:
+         lock.unlink(missing_ok=True)
+@@ -107,3 +157,4 @@
+ 
+ if __name__ == '__main__':
+     raise SystemExit(main())
++
+--- recebido/testes/test_automacao.py
++++ revisado/testes/test_automacao.py
+@@ -1,230 +1,234 @@
+-"""Testes sem GPU. Usa processos reais com modelos artificiais, nunca LLMs."""
+-import ast
+-import contextlib
+-import csv
+-import io
+-import json
+-import re
+-import sys
+-import tempfile
+-import types
+-import unittest
+-from pathlib import Path
+-from unittest.mock import patch
+-
+-BASE = Path(__file__).resolve().parents[1]
+-sys.path.insert(0, str(BASE))
+-import rodar_todos
+-from consolidar import consolidar
+-from registro import escrever_csv
+-
+-
+-class Normalizar(ast.NodeTransformer):
+-    def visit_Expr(self, node):
+-        if isinstance(node.value, ast.Call):
+-            call = node.value
+-            if isinstance(call.func, ast.Name) and call.func.id in {
+-                'etapa', 'registrar_trainer', 'salvar_resultado', 'salvar_tabelas', 'salvar_figuras'
+-            }:
+-                return None
+-            if isinstance(call.func, ast.Attribute) and isinstance(call.func.value, ast.Name) and call.func.value.id == 'plt' and call.func.attr == 'show':
+-                return None
+-            if isinstance(call.func, ast.Name) and call.func.id == 'print' and call.args and isinstance(call.args[0], ast.Constant) and call.args[0].value == 'Execucao concluida.':
+-                return None
+-        return self.generic_visit(node)
+-
+-    def visit_Call(self, node):
+-        node = self.generic_visit(node)
+-        if isinstance(node.func, ast.Name) and node.func.id == 'tqdm':
+-            return node.args[0]
+-        if isinstance(node.func, ast.Name) and node.func.id == 'SFTConfig':
+-            node.keywords = [kw for kw in node.keywords if kw.arg != 'max_steps']
+-        return node
+-
+-
+-class Testes(unittest.TestCase):
+-    def test_configuracao_do_protocolo_nos_quatro_modelos(self):
+-        for item in json.loads((BASE / 'auditoria/manifesto.json').read_text()):
+-            script = (BASE / 'modelos' / (item['modelo'] + '.py')).read_text(encoding='utf-8')
+-            tree = ast.parse(script)
+-            assignments = {}
+-            for node in tree.body:
+-                if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
+-                    try:
+-                        assignments[node.targets[0].id] = ast.literal_eval(node.value)
+-                    except (ValueError, TypeError):
+-                        pass
+-            self.assertEqual(assignments['CONDITIONS'], [('zero-shot', 0, False), ('3-shot', 3, False), ('5-shot', 5, False), ('fine-tuned', 0, True)])
+-            self.assertEqual(assignments['LEARNING_RATE'], 2e-5)
+-            self.assertEqual(assignments['FINE_TUNING_EPOCHS'], 5)
+-            self.assertEqual(assignments['MICRO_BATCH_SIZE'] * assignments['GRADIENT_ACCUMULATION_STEPS'], 32)
+-            self.assertEqual(assignments['EVAL_SIZE'] / assignments['SAMPLE_SIZE'], .2)
+-            configs = [node for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == 'SFTConfig']
+-            self.assertEqual(len(configs), 1)
+-            for config in configs:
+-                kw = next(k for k in config.keywords if k.arg == 'max_steps')
+-                self.assertEqual(ast.literal_eval(kw.value), -1)
+-                self.assertEqual(ast.literal_eval(next(k for k in config.keywords if k.arg == 'optim').value), 'adamw_torch')
+-
+-    def test_formulas_originais_preservadas(self):
+-        names = {'mean_ci', 'token_f1', 'rouge_l_f1', 'letter_ids', 'medqa_prompt', 'pubmedqa_prompt'}
+-        originals = {}
+-        notebook = json.loads((BASE / 'originais/gemma4_e4b_medquad_unsloth.ipynb').read_text(encoding='utf-8'))
+-        for cell in notebook['cells']:
+-            if cell['cell_type'] != 'code':
+-                continue
+-            source = ''.join(cell['source'])
+-            try:
+-                tree = ast.parse(source)
+-            except SyntaxError:
+-                continue
+-            for node in tree.body:
+-                if isinstance(node, ast.FunctionDef) and node.name in names:
+-                    originals[node.name] = ast.dump(node)
+-        self.assertEqual(set(originals), names)
+-        for path in (BASE / 'modelos').glob('*.py'):
+-            current = {n.name: ast.dump(n) for n in ast.parse(path.read_text(encoding='utf-8')).body
+-                       if isinstance(n, ast.FunctionDef) and n.name in names}
+-            self.assertEqual(current, originals)
+-
+-    def test_icl_sem_resposta_do_teste_e_demos_aninhadas(self):
+-        import hashlib
+-        import random
+-        tree = ast.parse((BASE / 'modelos/medgemma.py').read_text(encoding='utf-8'))
+-        names = {'clean_text', 'make_demo_pool', 'select_demonstrations', 'make_messages', 'macro_scores'}
+-        definitions = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
+-        env = dict(re=re, hashlib=hashlib, random=random, SEED=42, prompt_records={})
+-        exec(compile(ast.Module(body=definitions, type_ignores=[]), 'helpers', 'exec'), env)
+-        rows = [{'q': f'q{i}', 'a': f'a{i}'} for i in range(10)] + [{'q': ' Q0 ', 'a': 'duplicate'}]
+-        pool = env['make_demo_pool'](rows, 'q', ['q9'], lambda r: r['q'], lambda r: r['a'])
+-        self.assertEqual(len(pool), 9)
+-        self.assertNotIn('q9', [r['question'] for r in pool])
+-        env['demo_pools'] = {'test': pool}
+-        three = env['select_demonstrations']('test', 'q9', 3)
+-        five = env['select_demonstrations']('test', 'q9', 5)
+-        self.assertEqual(three, five[:3])
+-        self.assertEqual(five, env['select_demonstrations']('test', 'q9', 5))
+-        for shots in (0, 3, 5):
+-            env.update(CURRENT_SHOTS=shots, CURRENT_CONDITION=str(shots))
+-            messages = env['make_messages']('test', 'q9', 'q9', 'instrucoes')
+-            self.assertEqual(len(messages), 2 + 2 * shots)
+-            self.assertEqual(messages[-1], {'role': 'user', 'content': 'q9'})
+-            self.assertNotIn('a9', json.dumps(messages))
+-        score = env['macro_scores'](['A'] * 3, list('ABC'), list('ABC'))
+-        self.assertAlmostEqual(score['precision_macro'], 1 / 9)
+-        self.assertAlmostEqual(score['recall_macro'], 1 / 3)
+-        self.assertAlmostEqual(score['f1_macro'], 1 / 6)
+-
+-    def test_ordem_real_do_laco_e_treino_apenas_no_final(self):
+-        for path in (BASE / 'modelos').glob('*.py'):
+-            tree = ast.parse(path.read_text(encoding='utf-8'))
+-            loop = next(n for n in tree.body if isinstance(n, ast.For) and isinstance(n.iter, ast.Name) and n.iter.id == 'CONDITIONS')
+-            events = []
+-            class FakeModel:
+-                def save_pretrained(self, path):
+-                    events.append(('save', path))
+-            env = {'CONDITIONS': [('zero-shot', 0, False), ('3-shot', 3, False), ('5-shot', 5, False), ('fine-tuned', 0, True)],
+-                   'SEED': 42, 'FINE_TUNING_EPOCHS': 5, 'train_dataset': object(), 'comparison_examples': [],
+-                   'OUTPUT_DIR': 'fake', 'EXTENDED_DIR': 'fake-ext', 'all_rows': [], 'preview_rows': [], 'prompt_records': {},
+-                   'etapa': lambda *a: None, 'set_seed': lambda *a: None,
+-                   'FastModel': types.SimpleNamespace(for_inference=lambda m: None),
+-                   'torch': types.SimpleNamespace(cuda=types.SimpleNamespace(empty_cache=lambda: None)),
+-                   'gc': types.SimpleNamespace(collect=lambda: None), 'escrever_csv': lambda *a: None,
+-                   'salvar_tabelas': lambda *a: None, 'generate_preview_rows': lambda d: [],
+-                   'evaluate_benchmarks': lambda c: events.append(('benchmark', c)), 'save_summaries': lambda *a: None}
+-            def build_model(fine_tune=False):
+-                events.append(('load', fine_tune))
+-                env['text_tokenizer'] = FakeModel()
+-                return FakeModel()
+-            def train_regime(model, data, epochs, tag):
+-                events.append(('train', tag, epochs))
+-                return {}
+-            def evaluate_model(model, condition):
+-                events.append(('eval', condition))
+-                return [], 0
+-            env.update(build_model=build_model, train_regime=train_regime, evaluate_model=evaluate_model)
+-            exec(compile(ast.Module(body=[loop], type_ignores=[]), 'loop', 'exec'), env)
+-            self.assertEqual([e for e in events if e[0] == 'train'], [('train', 'fine-tuned', 5)])
+-            self.assertEqual([e for e in events if e[0] == 'load'], [('load', False)] * 3 + [('load', True)])
+-            self.assertLess(events.index(('benchmark', '5-shot')), events.index(('train', 'fine-tuned', 5)))
+-            self.assertNotIn('model', env)
+-            self.assertNotIn('text_tokenizer', env)
+-
+-    def test_csv_unicode_listas_e_colunas_variaveis(self):
+-        with tempfile.TemporaryDirectory(dir=BASE / "testes") as temp:
+-            p = Path(temp) / 'teste.csv'
+-            escrever_csv(p, [{'pergunta': 'É herdado?\n"sim", não', 'tempos': [0.1, 0.2]}, {'pergunta': 'x', 'loss': 1.2}])
+-            with p.open(encoding='utf-8-sig', newline='') as f:
+-                rows = list(csv.DictReader(f))
+-            self.assertEqual(json.loads(rows[0]['tempos']), [0.1, 0.2])
+-            self.assertEqual(rows[0]['pergunta'], 'É herdado?\n"sim", não')
+-            self.assertEqual(rows[1]['loss'], '1.2')
+-
+-    def test_dez_execucoes_por_modelo_isolamento_e_retomada(self):
+-        with tempfile.TemporaryDirectory(dir=BASE / "testes") as temp:
+-            root = Path(temp)
+-            package = root / 'pacote'
+-            (package / 'modelos').mkdir(parents=True)
+-            (package / 'registro.py').write_text('# fixture', encoding='utf-8')
+-            fixture = '''import os, csv
+-from pathlib import Path
+-assert Path(os.environ['LLM_RUN_DIR']).resolve() == Path.cwd()
+-with open('benchmark_summary.csv','w',newline='') as f:
+-    w=csv.DictWriter(f,fieldnames=['condition','metric','mean'])
+-    w.writeheader(); w.writerow(dict(condition='base',metric='simulado',mean=1))
+-print('processo',os.getpid())
+-'''
+-            for model in ['gemma4', 'qwen35']:
+-                (package / 'modelos' / f'{model}.py').write_text(fixture, encoding='utf-8')
+-            progress = types.ModuleType('tqdm.auto')
+-            progress.tqdm = lambda iterable, **kwargs: iterable
+-            args = ['rodar_todos.py', '--modelos', 'gemma4', 'qwen35', '--saida', str(root / 'saida')]
+-            with patch.object(rodar_todos, 'BASE', package), patch.dict(sys.modules, {'tqdm': types.ModuleType('tqdm'), 'tqdm.auto': progress}), contextlib.redirect_stdout(io.StringIO()):
+-                with patch.object(sys, 'argv', args):
+-                    self.assertEqual(rodar_todos.main(), 0)
+-                statuses = sorted((root / 'saida').glob('*/run_*/status.json'))
+-                self.assertEqual(len(statuses), 20)
+-                original = [s.read_bytes() for s in statuses]
+-                with patch.object(sys, 'argv', args + ['--retomar']):
+-                    self.assertEqual(rodar_todos.main(), 0)
+-                self.assertEqual(original, [s.read_bytes() for s in statuses])
+-                with patch.object(sys, 'argv', args):
+-                    with self.assertRaises(FileExistsError):
+-                        rodar_todos.main()
+-            with (root / 'saida/consolidado/benchmark_summary.csv').open(encoding='utf-8-sig') as f:
+-                rows = list(csv.DictReader(f))
+-            self.assertEqual(len(rows), 20)
+-            self.assertEqual([r['exec_repeticao'] for r in rows[:10]], [str(i) for i in range(1, 11)])
+-            self.assertFalse((root / 'saida/.em_execucao').exists())
+-
+-    def test_consolidacao_exclui_falhas(self):
+-        with tempfile.TemporaryDirectory(dir=BASE / "testes") as temp:
+-            root = Path(temp)
+-            for run, status in [(1, 'ok'), (2, 'erro')]:
+-                folder = root / 'gemma4' / f'run_{run:02}'
+-                folder.mkdir(parents=True)
+-                (folder / 'status.json').write_text(json.dumps(dict(modelo='gemma4', repeticao=run, seed=42, status=status)))
+-                escrever_csv(folder / 'benchmark_summary.csv', [{'mean': run}])
+-            result = consolidar(root)
+-            self.assertEqual(len(result['benchmark_summary.csv']), 1)
+-
+-    def test_falha_para_campanha_e_salva_log(self):
+-        with tempfile.TemporaryDirectory(dir=BASE / 'testes') as temp:
+-            root = Path(temp)
+-            (root / 'modelos').mkdir()
+-            (root / 'registro.py').write_text('# fixture')
+-            (root / 'modelos/gemma4.py').write_text('raise RuntimeError("falha simulada")')
+-            progress = types.ModuleType('tqdm.auto')
+-            progress.tqdm = lambda iterable, **kwargs: iterable
+-            with patch.object(rodar_todos, 'BASE', root), patch.dict(sys.modules, {'tqdm': types.ModuleType('tqdm'), 'tqdm.auto': progress}), patch.object(sys, 'argv', ['rodar_todos.py', '--modelos', 'gemma4', '--saida', str(root / 'saida')]), contextlib.redirect_stdout(io.StringIO()):
+-                self.assertEqual(rodar_todos.main(), 1)
+-            folder = root / 'saida/gemma4/run_01'
+-            self.assertEqual(json.loads((folder / 'status.json').read_text())['status'], 'erro')
+-            self.assertIn('falha simulada', (folder / 'execucao.log').read_text())
+-            self.assertFalse((root / 'saida/gemma4/run_02').exists())
+-            self.assertFalse((root / 'saida/.em_execucao').exists())
+-
+-
+-if __name__ == '__main__':
+-    unittest.main(verbosity=2)
+-
++"""Testes sem GPU. Usa processos reais com modelos artificiais, nunca LLMs."""
++import ast
++import contextlib
++import csv
++import io
++import json
++import re
++import sys
++import tempfile
++import types
++import unittest
++from pathlib import Path
++from unittest.mock import patch
++
++BASE = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(BASE))
++import rodar_todos
++from consolidar import consolidar
++from registro import escrever_csv
++
++
++class Normalizar(ast.NodeTransformer):
++    def visit_Expr(self, node):
++        if isinstance(node.value, ast.Call):
++            call = node.value
++            if isinstance(call.func, ast.Name) and call.func.id in {
++                'etapa', 'registrar_trainer', 'salvar_resultado', 'salvar_tabelas', 'salvar_figuras'
++            }:
++                return None
++            if isinstance(call.func, ast.Attribute) and isinstance(call.func.value, ast.Name) and call.func.value.id == 'plt' and call.func.attr == 'show':
++                return None
++            if isinstance(call.func, ast.Name) and call.func.id == 'print' and call.args and isinstance(call.args[0], ast.Constant) and call.args[0].value == 'Execucao concluida.':
++                return None
++        return self.generic_visit(node)
++
++    def visit_Call(self, node):
++        node = self.generic_visit(node)
++        if isinstance(node.func, ast.Name) and node.func.id == 'tqdm':
++            return node.args[0]
++        if isinstance(node.func, ast.Name) and node.func.id == 'SFTConfig':
++            node.keywords = [kw for kw in node.keywords if kw.arg != 'max_steps']
++        return node
++
++
++class Testes(unittest.TestCase):
++    def test_configuracao_do_protocolo_nos_quatro_modelos(self):
++        for item in json.loads((BASE / 'auditoria/manifesto.json').read_text()):
++            script = (BASE / 'modelos' / (item['modelo'] + '.py')).read_text(encoding='utf-8')
++            tree = ast.parse(script)
++            assignments = {}
++            for node in tree.body:
++                if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
++                    try:
++                        assignments[node.targets[0].id] = ast.literal_eval(node.value)
++                    except (ValueError, TypeError):
++                        pass
++            self.assertEqual(assignments['CONDITIONS'], [('zero-shot', 0, False), ('3-shot', 3, False), ('5-shot', 5, False), ('fine-tuned', 0, True)])
++            self.assertEqual(assignments['LEARNING_RATE'], 2e-5)
++            self.assertEqual(assignments['FINE_TUNING_EPOCHS'], 5)
++            self.assertEqual(assignments['MICRO_BATCH_SIZE'] * assignments['GRADIENT_ACCUMULATION_STEPS'], 32)
++            self.assertEqual(assignments['EVAL_SIZE'] / assignments['SAMPLE_SIZE'], .2)
++            configs = [node for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == 'SFTConfig']
++            self.assertEqual(len(configs), 1)
++            for config in configs:
++                kw = next(k for k in config.keywords if k.arg == 'max_steps')
++                self.assertEqual(ast.literal_eval(kw.value), -1)
++                self.assertEqual(ast.literal_eval(next(k for k in config.keywords if k.arg == 'optim').value), 'adamw_torch')
++
++    def test_formulas_originais_preservadas(self):
++        names = {'mean_ci', 'token_f1', 'rouge_l_f1', 'letter_ids', 'medqa_prompt', 'pubmedqa_prompt'}
++        originals = {}
++        notebook = json.loads((BASE / 'originais/gemma4_e4b_medquad_unsloth.ipynb').read_text(encoding='utf-8'))
++        for cell in notebook['cells']:
++            if cell['cell_type'] != 'code':
++                continue
++            source = ''.join(cell['source'])
++            try:
++                tree = ast.parse(source)
++            except SyntaxError:
++                continue
++            for node in tree.body:
++                if isinstance(node, ast.FunctionDef) and node.name in names:
++                    originals[node.name] = ast.dump(node)
++        self.assertEqual(set(originals), names)
++        for path in (BASE / 'modelos').glob('*.py'):
++            current = {n.name: ast.dump(n) for n in ast.parse(path.read_text(encoding='utf-8')).body
++                       if isinstance(n, ast.FunctionDef) and n.name in names}
++            self.assertEqual(current, originals)
++
++    def test_icl_sem_resposta_do_teste_e_demos_aninhadas(self):
++        import hashlib
++        import random
++        tree = ast.parse((BASE / 'modelos/medgemma.py').read_text(encoding='utf-8'))
++        names = {'clean_text', 'make_demo_pool', 'select_demonstrations', 'make_messages', 'macro_scores'}
++        definitions = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
++        env = dict(re=re, hashlib=hashlib, random=random, SEED=42, SPLIT_SEED=42, PERSONA='clinico', prompt_records={})
++        exec(compile(ast.Module(body=definitions, type_ignores=[]), 'helpers', 'exec'), env)
++        rows = [{'q': f'q{i}', 'a': f'a{i}'} for i in range(10)] + [{'q': ' Q0 ', 'a': 'duplicate'}]
++        pool = env['make_demo_pool'](rows, 'q', ['q9'], lambda r: r['q'], lambda r: r['a'])
++        self.assertEqual(len(pool), 9)
++        self.assertNotIn('q9', [r['question'] for r in pool])
++        env['demo_pools'] = {'test': pool}
++        three = env['select_demonstrations']('test', 'q9', 3)
++        five = env['select_demonstrations']('test', 'q9', 5)
++        self.assertEqual(three, five[:3])
++        self.assertEqual(five, env['select_demonstrations']('test', 'q9', 5))
++        for shots in (0, 3, 5):
++            env.update(CURRENT_SHOTS=shots, CURRENT_CONDITION=str(shots))
++            messages = env['make_messages']('test', 'q9', 'q9', 'instrucoes')
++            self.assertEqual(len(messages), 2 + 2 * shots)
++            self.assertEqual(messages[-1], {'role': 'user', 'content': 'q9'})
++            self.assertNotIn('a9', json.dumps(messages))
++        score = env['macro_scores'](['A'] * 3, list('ABC'), list('ABC'))
++        self.assertAlmostEqual(score['precision_macro'], 1 / 9)
++        self.assertAlmostEqual(score['recall_macro'], 1 / 3)
++        self.assertAlmostEqual(score['f1_macro'], 1 / 6)
++
++    def test_ordem_real_do_laco_e_treino_apenas_no_final(self):
++        for path in (BASE / 'modelos').glob('*.py'):
++            tree = ast.parse(path.read_text(encoding='utf-8'))
++            loop = next(n for n in tree.body if isinstance(n, ast.For) and isinstance(n.iter, ast.Name) and n.iter.id == 'CONDITIONS')
++            events = []
++            class FakeModel:
++                def save_pretrained(self, path):
++                    events.append(('save', path))
++            env = {'CONDITIONS': [('zero-shot', 0, False), ('3-shot', 3, False), ('5-shot', 5, False), ('fine-tuned', 0, True)],
++                   'SEED': 42, 'FINE_TUNING_EPOCHS': 5, 'train_dataset': object(), 'comparison_examples': [],
++                   'OUTPUT_DIR': 'fake', 'EXTENDED_DIR': 'fake-ext', 'all_rows': [], 'preview_rows': [], 'prompt_records': {},
++                   'etapa': lambda *a: None, 'set_seed': lambda *a: None,
++                   'FastModel': types.SimpleNamespace(for_inference=lambda m: None),
++                   'torch': types.SimpleNamespace(cuda=types.SimpleNamespace(empty_cache=lambda: None)),
++                   'gc': types.SimpleNamespace(collect=lambda: None), 'escrever_csv': lambda *a: None,
++                   'salvar_tabelas': lambda *a: None, 'generate_preview_rows': lambda d: [],
++                   'evaluate_benchmarks': lambda c: events.append(('benchmark', c)), 'save_summaries': lambda *a: None}
++            def build_model(fine_tune=False):
++                events.append(('load', fine_tune))
++                env['text_tokenizer'] = FakeModel()
++                return FakeModel()
++            def train_regime(model, data, epochs, tag):
++                events.append(('train', tag, epochs))
++                return {}
++            def evaluate_model(model, condition):
++                events.append(('eval', condition))
++                return [], 0
++            env.update(build_model=build_model, train_regime=train_regime, evaluate_model=evaluate_model)
++            exec(compile(ast.Module(body=[loop], type_ignores=[]), 'loop', 'exec'), env)
++            self.assertEqual([e for e in events if e[0] == 'train'], [('train', 'fine-tuned', 5)])
++            self.assertEqual([e for e in events if e[0] == 'load'], [('load', False)] * 3 + [('load', True)])
++            self.assertLess(events.index(('benchmark', '5-shot')), events.index(('train', 'fine-tuned', 5)))
++            self.assertNotIn('model', env)
++            self.assertNotIn('text_tokenizer', env)
++
++    def test_csv_unicode_listas_e_colunas_variaveis(self):
++        with tempfile.TemporaryDirectory(dir=BASE / "testes") as temp:
++            p = Path(temp) / 'teste.csv'
++            escrever_csv(p, [{'pergunta': 'É herdado?\n"sim", não', 'tempos': [0.1, 0.2]}, {'pergunta': 'x', 'loss': 1.2}])
++            with p.open(encoding='utf-8-sig', newline='') as f:
++                rows = list(csv.DictReader(f))
++            self.assertEqual(json.loads(rows[0]['tempos']), [0.1, 0.2])
++            self.assertEqual(rows[0]['pergunta'], 'É herdado?\n"sim", não')
++            self.assertEqual(rows[1]['loss'], '1.2')
++
++    def test_dez_execucoes_por_modelo_isolamento_e_retomada(self):
++        with tempfile.TemporaryDirectory(dir=BASE / "testes") as temp:
++            root = Path(temp)
++            package = root / 'pacote'
++            (package / 'modelos').mkdir(parents=True)
++            (package / 'registro.py').write_text('# fixture', encoding='utf-8')
++            (package / 'prompts_medicos.py').write_bytes((BASE / 'prompts_medicos.py').read_bytes())
++            (package / 'rodar_todos.py').write_bytes((BASE / 'rodar_todos.py').read_bytes())
++            fixture = '''import os, csv
++from pathlib import Path
++assert Path(os.environ['LLM_RUN_DIR']).resolve() == Path.cwd()
++with open('benchmark_summary.csv','w',newline='') as f:
++    w=csv.DictWriter(f,fieldnames=['condition','metric','mean'])
++    w.writeheader(); w.writerow(dict(condition='base',metric='simulado',mean=1))
++print('processo',os.getpid())
++'''
++            for model in ['gemma4', 'qwen35']:
++                (package / 'modelos' / f'{model}.py').write_text(fixture, encoding='utf-8')
++            progress = types.ModuleType('tqdm.auto')
++            progress.tqdm = lambda iterable, **kwargs: iterable
++            args = ['rodar_todos.py', '--modelos', 'gemma4', 'qwen35', '--saida', str(root / 'saida')]
++            with patch.object(rodar_todos, 'BASE', package), patch.dict(sys.modules, {'tqdm': types.ModuleType('tqdm'), 'tqdm.auto': progress}), contextlib.redirect_stdout(io.StringIO()):
++                with patch.object(sys, 'argv', args):
++                    self.assertEqual(rodar_todos.main(), 0)
++                statuses = sorted((root / 'saida').glob('*/run_*/status.json'))
++                self.assertEqual(len(statuses), 20)
++                original = [s.read_bytes() for s in statuses]
++                with patch.object(sys, 'argv', args + ['--retomar']):
++                    self.assertEqual(rodar_todos.main(), 0)
++                self.assertEqual(original, [s.read_bytes() for s in statuses])
++                with patch.object(sys, 'argv', args):
++                    with self.assertRaises(FileExistsError):
++                        rodar_todos.main()
++            with (root / 'saida/consolidado/benchmark_summary.csv').open(encoding='utf-8-sig') as f:
++                rows = list(csv.DictReader(f))
++            self.assertEqual(len(rows), 20)
++            self.assertEqual([r['exec_repeticao'] for r in rows[:10]], [str(i) for i in range(1, 11)])
++            self.assertFalse((root / 'saida/.em_execucao').exists())
++
++    def test_consolidacao_exclui_falhas(self):
++        with tempfile.TemporaryDirectory(dir=BASE / "testes") as temp:
++            root = Path(temp)
++            for run, status in [(1, 'ok'), (2, 'erro')]:
++                folder = root / 'gemma4' / f'run_{run:02}'
++                folder.mkdir(parents=True)
++                (folder / 'status.json').write_text(json.dumps(dict(modelo='gemma4', repeticao=run, seed=42, status=status)))
++                escrever_csv(folder / 'benchmark_summary.csv', [{'mean': run}])
++            result = consolidar(root)
++            self.assertEqual(len(result['benchmark_summary.csv']), 1)
++
++    def test_falha_para_campanha_e_salva_log(self):
++        with tempfile.TemporaryDirectory(dir=BASE / 'testes') as temp:
++            root = Path(temp)
++            (root / 'modelos').mkdir()
++            (root / 'registro.py').write_text('# fixture')
++            (root / 'prompts_medicos.py').write_bytes((BASE / 'prompts_medicos.py').read_bytes())
++            (root / 'rodar_todos.py').write_bytes((BASE / 'rodar_todos.py').read_bytes())
++            (root / 'modelos/gemma4.py').write_text('raise RuntimeError("falha simulada")')
++            progress = types.ModuleType('tqdm.auto')
++            progress.tqdm = lambda iterable, **kwargs: iterable
++            with patch.object(rodar_todos, 'BASE', root), patch.dict(sys.modules, {'tqdm': types.ModuleType('tqdm'), 'tqdm.auto': progress}), patch.object(sys, 'argv', ['rodar_todos.py', '--modelos', 'gemma4', '--saida', str(root / 'saida')]), contextlib.redirect_stdout(io.StringIO()):
++                self.assertEqual(rodar_todos.main(), 1)
++            folder = root / 'saida/gemma4/run_01'
++            self.assertEqual(json.loads((folder / 'status.json').read_text())['status'], 'erro')
++            self.assertIn('falha simulada', (folder / 'execucao.log').read_text())
++            self.assertFalse((root / 'saida/gemma4/run_02').exists())
++            self.assertFalse((root / 'saida/.em_execucao').exists())
++
++
++if __name__ == '__main__':
++    unittest.main(verbosity=2)
++

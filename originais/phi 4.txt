@@ -1,0 +1,45 @@
+phi 4
+
+
+================================================================================
+Sample 1
+================================================================================
+Question: what research (or clinical trials) is being done for Glaucoma ?
+
+Before fine-tuning:
+Several clinical trials and research studies are currently investigating new treatments and therapies for Glaucoma, including the use of neuroprotective agents, gene therapy, and advanced surgical techniques. Notable studies include the Glaucoma Treatment Study (GLASS) and the Glaucoma Laser Trial (GLT). Additionally, research is being conducted on the efficacy of new drug delivery systems, such as sustained-release implants and contact lenses, to improve patient outcomes.
+
+After fine-tuning:
+Glaucoma is a group of eye conditions that damage the optic nerve, which is vital for good vision. This damage is often caused by an abnormally high pressure in the eye. Glaucoma is one of the leading causes of blindness for people over age 60. It can occur at any age. Glaucoma is often called the "sneak thief of sight" because it tends to progress without noticeable vision loss until the condition is quite advanced. Glaucoma is the second leading cause of blindness in the United States. Glaucoma is a group of eye conditions that damage the optic nerve, which is vital for good vision. This dam...
+
+Reference answer:
+Through studies in the laboratory and with patients, the National Eye Institute is seeking better ways to detect, treat, and prevent vision loss in people with glaucoma. For example, researchers have discovered genes that could help explain how glaucoma damages the eye. NEI also is supporting studies to learn more about who is likely to get glaucoma, when to treat people who have increased eye pressure, and which treatment to use first.
+
+================================================================================
+Sample 2
+================================================================================
+Question: Is acral peeling skin syndrome inherited ?
+
+Before fine-tuning:
+Acral peeling skin syndrome is not inherited. It is a rare genetic disorder characterized by the peeling of skin on the palms, soles, and sometimes the face. The condition is caused by mutations in the ATP2A2 gene, which encodes a calcium pump protein. It is not passed down from parents to children but occurs due to a new mutation in the affected individual.
+
+After fine-tuning:
+Acral peeling skin syndrome is not inherited. It is a rare condition that causes the skin to peel off in sheets, usually on the hands and feet. The cause of acral peeling skin syndrome is unknown. It is not known whether the condition is inherited.
+
+Reference answer:
+This condition is inherited in an autosomal recessive pattern, which means both copies of the gene in each cell have mutations. The parents of an individual with an autosomal recessive condition each carry one copy of the mutated gene, but they typically do not show signs and symptoms of the condition.
+
+================================================================================
+Sample 3
+================================================================================
+Question: Is distal hereditary motor neuropathy, type V inherited ?
+
+Before fine-tuning:
+Yes, distal hereditary motor neuropathy, type V (dHMN-V) is inherited. It is an autosomal dominant disorder caused by mutations in the SPG11 gene. The condition primarily affects the peripheral nerves, leading to muscle weakness and atrophy, particularly in the lower limbs. Symptoms typically begin in childhood or adolescence.
+
+After fine-tuning:
+Distal hereditary motor neuropathy, type V is inherited in an autosomal dominant pattern.
+
+Reference answer:
+This condition is inherited in an autosomal dominant pattern, which means one copy of the altered gene in each cell is sufficient to cause the disorder. Some people who have the altered gene never develop the condition, a situation known as reduced penetrance.
+
