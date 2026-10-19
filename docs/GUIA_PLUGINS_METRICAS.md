@@ -18,7 +18,7 @@ consolidar.py  ──────>  junta os metricas_<nome>.csv de todas as run
 | `metricas/base.py` | Define o contrato `MetricaPlugin`, os escopos válidos (`ESCOPOS = ('pergunta', 'run')`) e a dataclass `RunContext`. |
 | `metricas/loader.py` | `carregar_plugins(modulos)` importa os módulos, chama `criar()` e confere o contrato. Devolve `(plugins, erros)`. |
 | `metricas/runner.py` | `executar(campanha, plugins)` percorre `*/run_*`, pula runs sem `status=ok`, aplica cada plugin e grava o CSV. Se um plugin falha numa run, os outros continuam. |
-| `metricas/plugins/desempenho.py` | Builtin (escopo `run`): `mean`/`median`/`p99_pior_caso` (P99 nos tempos, P1 em tokens/s) de latência e vazão por regime + `train_runtime` e `training_loss`. |
+| `metricas/plugins/desempenho.py` | Builtin (escopo `run`): `prefill_ms`, `decode_mean_ms`, `decode_p95_ms`, `ttft_ms`, `overall_tok/s`, `peak_rss_bytes`, tokens médios por regime + `train_runtime` e `training_loss`. |
 | `metricas/plugins/bert_score.py` | Exemplo real com lib externa (escopo `pergunta`, `pip install bert-score`). |
 | `metricas/plugins/template.py` | Ponto de partida comentado (PASSO 0 a 7) com autoteste. |
 
@@ -140,5 +140,5 @@ Observações:
 
 - Rodar de novo sobrescreve `metricas_<nome>.csv` da run.
 - Valores `list`/`dict` no retorno viram JSON dentro da célula do CSV.
-- Hoje o pico de VRAM da geração fica em `registros/summary_df.csv` (`gen_peak_vram_gb`), não em
-  `answers_per_question.csv`; por isso `peak_vram_gb` não aparece no `desempenho`.
+- O pico de RAM do processo aparece em `desempenho` como `peak_rss_bytes` quando existe no CSV.
+  O pico de VRAM continua em `registros/summary_df.csv` (`gen_peak_vram_gb`).

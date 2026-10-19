@@ -8,18 +8,18 @@
 #   1. salve como aplicar_metricas.py na RAIZ do repo (onde estao consolidar.py e registro.py) e rode
 #        python aplicar_metricas.py
 #      ou cole numa celula do Jupyter aberta na raiz do repo.
-#   2. confira a saida: "ok <arquivo>" para cada arquivo, "Ran 7 tests ... OK" e o autoteste do template.
+#   2. confira a saida: "ok <arquivo>" para cada arquivo, "Ran 8 tests ... OK" e o autoteste do template.
 #   3. se algum arquivo ja existir com conteudo diferente, ele e PULADO; troque SOBRESCREVER = True.
 #
 # Arquivos criados (o que cada um faz):
 #   metricas/base.py              contrato: Protocol MetricaPlugin + dataclass RunContext
 #   metricas/loader.py            carregar_plugins(modulos): importa, exige criar(), avisa dependencia faltante
 #   metricas/runner.py            executar(campanha, plugins): percorre */run_*, grava metricas_<nome>.csv
-#   metricas/plugins/desempenho.py builtin (escopo run): mean/median/p99_pior_caso de latencia e vazao por regime + treino
+#   metricas/plugins/desempenho.py builtin (escopo run): prefill, decode mean/p95, TTFT, tok/s e peak RSS por regime + treino
 #   metricas/plugins/template.py  TEMPLATE comentado (PASSO 0-7) para o colega criar a metrica dele
 #   metricas/plugins/bert_score.py exemplo com lib externa (pip install bert-score)
 #   rodar_metricas.py             CLI: pasta + --plugins mod1 mod2 + --ignorar-faltantes
-#   testes/test_metricas.py       7 testes com plugin fake (sem GPU, sem dependencias)
+#   testes/test_metricas.py       8 testes com plugin fake (sem GPU, sem dependencias)
 #
 # Para o colega adicionar uma metrica: copie metricas/plugins/template.py para
 # metricas/plugins/<sua_metrica>.py, siga os PASSOS no arquivo e rode
@@ -197,18 +197,11 @@ ARQUIVOS['metricas/plugins/__init__.py'] = r'''"""Plugins de metricas. desempenh
 '''
 
 # ---------------------------------------------------------------- metricas/plugins/desempenho.py
-ARQUIVOS['metricas/plugins/desempenho.py'] = r'''"""Builtin, escopo run: media/mediana/p99_pior_caso de latencia e vazao por regime + tempo e loss do treino.
-
-Mesmo criterio de mean_median_p99 dos scripts em modelos/: P99 onde menor e melhor (tempos)
-e P1 onde maior e melhor (tokens/s), a cauda lenta. Com n<100 o P99 e quase o maximo.
-"""
+ARQUIVOS['metricas/plugins/desempenho.py'] = r'''"""Builtin, escopo run: metricas [METRICS] de velocidade por regime + tempo e loss do treino."""
+import json
 import math
 
 import numpy as np
-
-# coluna -> o que e melhor
-COLUNAS = {'latency_s': 'lower', 'ttft_s': 'lower', 'tokens_per_s': 'higher',
-           'decode_tokens_per_s': 'higher', 'peak_vram_gb': 'lower'}
 
 
 def numero(valor):
@@ -217,11 +210,6 @@ def numero(valor):
     except (TypeError, ValueError):
         return None
     return None if math.isnan(valor) else valor
-
-
-def mean_median_p99(valores, better='lower'):
-    tail = 99 if better == 'lower' else 1
-    return float(np.mean(valores)), float(np.median(valores)), float(np.percentile(valores, tail))
 
 
 class Desempenho:
@@ -236,16 +224,39 @@ class Desempenho:
         linhas = []
         for regime in regimes:
             rows = [row for row in run.respostas if row.get('regime') == regime]
-            linha = {'regime': regime, 'n_perguntas': len(rows)}
-            for coluna, better in COLUNAS.items():
-                # peak_vram_gb so entra se existir no CSV; hoje fica no summary_df (gen_peak_vram_gb).
-                if not any(coluna in row for row in rows):
+            prefill = [v for v in (numero(row.get('prefill_s')) for row in rows) if v is not None]
+            ttft = [v for v in (numero(row.get('ttft_s')) for row in rows) if v is not None]
+            prompt_tokens = [v for v in (numero(row.get('prompt_tokens')) for row in rows) if v is not None]
+            generated_tokens = [v for v in (numero(row.get('new_tokens')) for row in rows) if v is not None]
+            latency = [v for v in (numero(row.get('latency_s')) for row in rows) if v is not None]
+            rss = [v for v in (numero(row.get('peak_rss_bytes')) for row in rows) if v is not None]
+
+            intervals = []
+            for row in rows:
+                try:
+                    times = json.loads(row.get('token_times', ''))
+                    if not isinstance(times, list):
+                        continue
+                    times = [numero(value) for value in times]
+                    if any(value is None for value in times):
+                        continue
+                    intervals.extend((b - a) * 1000 for a, b in zip(times, times[1:]))
+                except (TypeError, ValueError):
                     continue
-                valores = [v for v in (numero(row.get(coluna)) for row in rows) if v is not None]
-                media, mediana, p99 = mean_median_p99(valores, better) if valores else (None, None, None)
-                linha[f'{coluna}_mean'] = media
-                linha[f'{coluna}_median'] = mediana
-                linha[f'{coluna}_p99_pior_caso'] = p99
+
+            total_time = sum(latency)
+            linha = {
+                'regime': regime,
+                'n_perguntas': len(rows),
+                'prefill_ms': float(np.mean(prefill)) * 1000 if prefill else None,
+                'decode_mean_ms': float(np.mean(intervals)) if intervals else None,
+                'decode_p95_ms': float(np.percentile(intervals, 95)) if intervals else None,
+                'ttft_ms': float(np.mean(ttft)) * 1000 if ttft else None,
+                'overall_tok/s': sum(generated_tokens) / total_time if generated_tokens and total_time > 0 else None,
+                'peak_rss_bytes': max(rss) if rss else None,
+                'prompt_tokens': float(np.mean(prompt_tokens)) if prompt_tokens else None,
+                'generated_tokens': float(np.mean(generated_tokens)) if generated_tokens else None,
+            }
             # So o regime fine-tuned treina; os outros ficam vazios.
             treino = run.treino.get(regime, {})
             linha['train_runtime'] = numero(treino.get('train_runtime'))
@@ -438,6 +449,7 @@ if __name__ == '__main__':
 
 # ---------------------------------------------------------------- testes/test_metricas.py
 ARQUIVOS['testes/test_metricas.py'] = r'''"""Pacote metricas sem GPU: plugin fake, ambos os escopos, CSV gerado e plugin faltante."""
+import ast
 import csv
 import json
 import subprocess
@@ -445,6 +457,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+import numpy as np
 
 RAIZ = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(RAIZ))
@@ -504,9 +518,14 @@ class MetricasTest(unittest.TestCase):
         linhas = []
         for regime in ['zero-shot', 'fine-tuned']:
             for i in range(4):
-                linhas.append({'regime': regime, 'question': f'q{i}', 'prediction': 'x' * (i + 1),
-                               'reference': 'ref', 'latency_s': i + 1, 'ttft_s': 0.1,
-                               'tokens_per_s': 10, 'decode_tokens_per_s': 'nan'})
+                linha = {'regime': regime, 'question': f'q{i}', 'prediction': 'x' * (i + 1),
+                         'reference': 'ref', 'latency_s': i + 1, 'ttft_s': 0.1, 'prefill_s': 0.05,
+                         'token_times': [0.1, 0.2, 0.4], 'new_tokens': 3, 'prompt_tokens': 10 + i,
+                         'peak_rss_bytes': 1000 * (i + 1), 'tokens_per_s': 10, 'decode_tokens_per_s': 'nan'}
+                if regime == 'fine-tuned':
+                    del linha['prefill_s']
+                    del linha['peak_rss_bytes']
+                linhas.append(linha)
         escrever_csv(self.run / 'gemma4-e4b-medquad-unsloth-extended' / 'answers_per_question.csv', linhas)
         escrever_csv(self.run / 'registros' / 'treino_fine-tuned_metricas.csv',
                      [{'training_loss': 1.5, 'global_step': 30, 'train_runtime': 120.0}])
@@ -556,14 +575,18 @@ class MetricasTest(unittest.TestCase):
         self.assertEqual(por_run, [{'modelo_id': 'unsloth/gemma-4-E4B-it', 'n_respostas': '8'}])
 
         desempenho = {row['regime']: row for row in ler(self.run / 'metricas_desempenho.csv')}
-        self.assertEqual(float(desempenho['zero-shot']['latency_s_mean']), 2.5)
-        self.assertEqual(float(desempenho['zero-shot']['latency_s_median']), 2.5)
-        # Tempo: P99 (cauda alta). Tokens/s: P1 (cauda baixa).
-        self.assertAlmostEqual(float(desempenho['zero-shot']['latency_s_p99_pior_caso']), 3.97)
-        self.assertEqual(float(desempenho['zero-shot']['tokens_per_s_p99_pior_caso']), 10.0)
-        self.assertEqual(desempenho['zero-shot']['decode_tokens_per_s_mean'], '')
-        self.assertNotIn('peak_vram_gb_mean', desempenho['zero-shot'])
+        self.assertAlmostEqual(float(desempenho['zero-shot']['prefill_ms']), 50)
+        self.assertAlmostEqual(float(desempenho['zero-shot']['decode_mean_ms']), 150)
+        self.assertAlmostEqual(float(desempenho['zero-shot']['decode_p95_ms']), 200)
+        self.assertAlmostEqual(float(desempenho['zero-shot']['ttft_ms']), 100)
+        self.assertAlmostEqual(float(desempenho['zero-shot']['overall_tok/s']), 1.2)
+        self.assertEqual(float(desempenho['zero-shot']['peak_rss_bytes']), 4000)
+        self.assertAlmostEqual(float(desempenho['zero-shot']['prompt_tokens']), 11.5)
+        self.assertAlmostEqual(float(desempenho['zero-shot']['generated_tokens']), 3)
         self.assertEqual(desempenho['zero-shot']['train_runtime'], '')
+        self.assertEqual(desempenho['fine-tuned']['prefill_ms'], '')
+        self.assertEqual(desempenho['fine-tuned']['peak_rss_bytes'], '')
+        self.assertAlmostEqual(float(desempenho['fine-tuned']['decode_mean_ms']), 150)
         self.assertEqual(float(desempenho['fine-tuned']['train_runtime']), 120.0)
         self.assertEqual(float(desempenho['fine-tuned']['training_loss']), 1.5)
         self.assertFalse((self.campanha / 'gemma4' / 'run_02' / 'metricas_fake.csv').exists())
@@ -573,6 +596,39 @@ class MetricasTest(unittest.TestCase):
         junto = ler(self.campanha / 'consolidado' / 'metricas_fake.csv')
         self.assertEqual(junto[0]['exec_modelo'], 'gemma4')
         self.assertEqual(junto[0]['exec_seed'], '42')
+
+    def test_metricas_velocidade_modelos(self):
+        nomes = ['gemma4', 'huatuogpt', 'medgemma', 'qwen35']
+        funcoes = ['peak_rss_bytes', 'metricas_velocidade', 'formatar_metricas']
+        fontes = []
+        for nome in nomes:
+            texto = (RAIZ / 'modelos' / f'{nome}.py').read_text(encoding='utf-8')
+            arvore = ast.parse(texto)
+            definicoes = {node.name: ast.get_source_segment(texto, node)
+                          for node in ast.walk(arvore) if isinstance(node, ast.FunctionDef)}
+            fontes.append('\n\n'.join(definicoes[funcao] for funcao in funcoes))
+        self.assertTrue(all(fonte == fontes[0] for fonte in fontes[1:]))
+
+        namespace = {'np': np}
+        exec(fontes[0], namespace)
+        rows = [
+            {'total_s': 2, 'ttft_s': 0.1, 'prefill_s': 0.05, 'token_times': [0, 0.1, 0.3],
+             'new_tokens': 3, 'prompt_tokens': 10, 'peak_rss_bytes': 1000},
+            {'total_s': 4, 'ttft_s': 0.3, 'prefill_s': 0.15, 'token_times': [0, 0.2, 0.4],
+             'new_tokens': 5, 'prompt_tokens': 20, 'peak_rss_bytes': 2000},
+        ]
+        metricas = namespace['metricas_velocidade'](rows)
+        self.assertEqual(metricas['input'], {'prompt_tokens': 15.0, 'generated_tokens': 4.0})
+        self.assertAlmostEqual(metricas['prefill']['latency_ms'], 100)
+        self.assertAlmostEqual(metricas['decode']['mean_ms'], 175)
+        self.assertAlmostEqual(metricas['decode']['p95_ms'], 200)
+        self.assertAlmostEqual(metricas['e2e']['ttft_ms'], 200)
+        self.assertAlmostEqual(metricas['e2e']['overall_tokens_per_sec'], 8 / 6)
+        self.assertEqual(metricas['memory']['peak_rss_bytes'], 2000)
+        bloco = namespace['formatar_metricas'](metricas)
+        self.assertTrue(bloco.startswith('[METRICS]'))
+        self.assertEqual(len(bloco.splitlines()), 9)
+        self.assertIn('  decode_p95_ms:     200.00', bloco.splitlines())
 
     def test_plugin_faltante(self):
         plugins, erros = carregar_plugins(['plugin_sem_dep', 'plugin_inexistente_abc', 'plugin_fake'])
@@ -669,10 +725,10 @@ mudar nada no repositório: basta expor essa interface e estar no `PYTHONPATH`.
 Para criar um, copie `metricas/plugins/template.py`: ele é comentado passo a passo (PASSO 0 a 7), roda sem dependências
 e tem autoteste (`python -m metricas.plugins.template`). `metricas/plugins/bert_score.py` é um exemplo real com lib externa
 (`pip install bert-score`, gera `bert_p`, `bert_r`, `bert_f1`).
-`metricas/plugins/desempenho.py` (builtin, escopo run) dá `mean`, `median` e `p99_pior_caso` de `latency_s`, `ttft_s`,
-`tokens_per_s`, `decode_tokens_per_s` e `peak_vram_gb` por regime, além de `train_runtime` e `training_loss`.
-O critério é o mesmo de `mean_median_p99` em `modelos/`: P99 nos tempos e P1 em tokens/s (cauda lenta).
-Colunas ausentes no CSV são puladas: hoje o pico de VRAM da geração fica em `registros/summary_df.csv` (`gen_peak_vram_gb`), não por pergunta.
+`metricas/plugins/desempenho.py` (builtin, escopo run) grava por regime `prefill_ms`, `decode_mean_ms`,
+`decode_p95_ms`, `ttft_ms`, `overall_tok/s`, `peak_rss_bytes`, `prompt_tokens`, `generated_tokens`,
+`train_runtime` e `training_loss`. Colunas ausentes ou vazias ficam em branco; o pico de VRAM continua
+em `registros/summary_df.csv` (`gen_peak_vram_gb`).
 Como `ambiente.json` ainda não grava o ID do Hugging Face, `modelo_id` vem de `registros/model_config.json` (`_name_or_path`) quando faltar.
 
 '''
@@ -702,7 +758,7 @@ elif '## Escopo e validação' in texto:
 else:
     print('README sem "## Escopo e validação": cole SECAO_README manualmente.')
 
-# 3. Verificacao: testes do pacote (esperado: Ran 7 tests ... OK).
+# 3. Verificacao: testes do pacote (esperado: Ran 8 tests ... OK).
 teste = subprocess.run([sys.executable, '-m', 'unittest', 'testes.test_metricas', '-v'],
                        cwd=REPO, capture_output=True, text=True)
 print(teste.stdout + teste.stderr)

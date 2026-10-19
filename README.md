@@ -103,12 +103,30 @@ O resumo mantém a análise entre execuções do pacote original. Para estudar s
 prefira uma repetição por seed; não interprete repetições idênticas como amostras
 independentes. As cópias `registro__*` não devem ser somadas aos CSVs originais.
 
-## Estatísticas de velocidade (TTFT, TTLT, tokens/s)
+## Métricas de velocidade ([METRICS])
 
-Nas linhas `category=speed` de `benchmark_summary.csv`, `mean`, `median` e `p99_pior_caso` substituem
-`ci_low`/`ci_high`, que continuam apenas na acurácia. Onde menor é melhor (TTFT, TTLT, tempos) o valor é o P99;
-em tokens/s (maior é melhor) é o P1, a cauda lenta. Com n=20 por condição o P99 é quase o máximo e o código
-emite um aviso; use n>=100 como mínimo. Como o código mudou, use uma nova pasta de saída.
+O bloco impresso por condição tem este formato:
+```text
+[METRICS]
+  prefill_ms:        12.34
+  decode_mean_ms:    12.34
+  decode_p95_ms:     12.34
+  ttft_ms:           12.34
+  overall_tok/s:     12.34
+  peak_rss:          123456
+  prompt_tokens:     123.4
+  generated_tokens:  123.4
+```
+
+- `prefill_ms`: callback do streamer para o prompt até o primeiro token (forward do prompt + primeiro token).
+- `decode_mean_ms` / `decode_p95_ms`: intervalo entre tokens consecutivos, agrupando os tokens de todas as perguntas da condição.
+- `ttft_ms`: início de `generate` até o primeiro token; inclui a preparação.
+- `overall_tok/s`: soma dos tokens gerados dividida pela soma do tempo total.
+- `peak_rss`: pico de RAM do processo (`ru_maxrss` no Linux; `psutil` `peak_wset` no Windows se instalado; caso contrário `None`), incluindo o modelo carregado, não por geração.
+- `prompt_tokens` / `generated_tokens`: média por pergunta.
+
+As linhas são gravadas em `benchmark_summary.csv` com `category=speed`, `metric=<nome>` e o valor em `mean`.
+O pico de VRAM continua em `gen_peak_vram_gb`. Como o código mudou, use uma nova pasta de saída.
 
 
 ## Métricas extras (plugins)
@@ -145,10 +163,10 @@ mudar nada no repositório: basta expor essa interface e estar no `PYTHONPATH`.
 Para criar um, copie `metricas/plugins/template.py`: ele é comentado passo a passo (PASSO 0 a 7), roda sem dependências
 e tem autoteste (`python -m metricas.plugins.template`). `metricas/plugins/bert_score.py` é um exemplo real com lib externa
 (`pip install bert-score`, gera `bert_p`, `bert_r`, `bert_f1`).
-`metricas/plugins/desempenho.py` (builtin, escopo run) dá `mean`, `median` e `p99_pior_caso` de `latency_s`, `ttft_s`,
-`tokens_per_s`, `decode_tokens_per_s` e `peak_vram_gb` por regime, além de `train_runtime` e `training_loss`.
-O critério é o mesmo de `mean_median_p99` em `modelos/`: P99 nos tempos e P1 em tokens/s (cauda lenta).
-Colunas ausentes no CSV são puladas: hoje o pico de VRAM da geração fica em `registros/summary_df.csv` (`gen_peak_vram_gb`), não por pergunta.
+`metricas/plugins/desempenho.py` (builtin, escopo run) grava por regime `prefill_ms`, `decode_mean_ms`,
+`decode_p95_ms`, `ttft_ms`, `overall_tok/s`, `peak_rss_bytes`, `prompt_tokens`, `generated_tokens`,
+`train_runtime` e `training_loss`. Colunas ausentes ou vazias ficam em branco; o pico de VRAM continua
+em `registros/summary_df.csv` (`gen_peak_vram_gb`).
 Como `ambiente.json` ainda não grava o ID do Hugging Face, `modelo_id` vem de `registros/model_config.json` (`_name_or_path`) quando faltar.
 
 ## Escopo e validação
@@ -176,6 +194,5 @@ prompts antigos; são históricos. Para esta versão, consulte este README,
 diagrama do projeto 
 
 <img width="5280" height="4276" alt="ada - finetuning" src="https://github.com/user-attachments/assets/5cf697fb-ec8d-403e-84ec-5aedf3bad214" />
-
 
 

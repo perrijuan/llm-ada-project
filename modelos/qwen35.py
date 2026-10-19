@@ -174,18 +174,50 @@ def mean_ci(values):
     return mean, mean - half, mean + half
 
 
-def mean_median_p99(values, better='lower'):
-    # Cauda do pior caso: P99 quando menor e melhor (tempos); P1 quando maior e melhor (tokens/s).
-    # Percentil linear (padrao do NumPy). Nao altera mean_ci, que continua valendo para a acuracia.
-    import warnings
-    values = np.asarray(values, dtype=float)
-    values = values[~np.isnan(values)]
-    if values.size == 0:
-        return float('nan'), float('nan'), float('nan')
-    if values.size < 100:
-        warnings.warn(f'P99 com n={values.size} e quase o maximo; use n>=100 (ideal ~1000).')
-    tail = 99 if better == 'lower' else 1
-    return values.mean(), float(np.median(values)), float(np.percentile(values, tail))
+def peak_rss_bytes():
+    # Pico de RAM do processo desde o inicio (inclui o modelo carregado). None se nao der para medir.
+    try:
+        import resource
+        return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024  # Linux: KB
+    except ImportError:
+        try:
+            import psutil
+            return psutil.Process().memory_info().peak_wset  # Windows
+        except (ImportError, AttributeError):
+            return None
+
+
+def metricas_velocidade(rows):
+    # rows = linhas de timed_answer de uma condicao. Decode = intervalo entre tokens (todas as perguntas juntas).
+    itl_ms = np.asarray([(b - a) * 1000 for r in rows for a, b in zip(r['token_times'], r['token_times'][1:])], dtype=float)
+    total_tokens = sum(r['new_tokens'] for r in rows)
+    total_s = sum(r['total_s'] for r in rows)
+    rss = [r['peak_rss_bytes'] for r in rows if r.get('peak_rss_bytes') is not None]
+    return {
+        'input': {'prompt_tokens': round(float(np.mean([r['prompt_tokens'] for r in rows])), 1),
+                  'generated_tokens': round(float(np.mean([r['new_tokens'] for r in rows])), 1)},
+        'prefill': {'latency_ms': float(np.mean([r['prefill_s'] for r in rows])) * 1000},
+        'decode': {'mean_ms': float(itl_ms.mean()) if itl_ms.size else float('nan'),
+                   'p95_ms': float(np.percentile(itl_ms, 95)) if itl_ms.size else float('nan')},
+        'e2e': {'ttft_ms': float(np.mean([r['ttft_s'] for r in rows])) * 1000,
+                'overall_tokens_per_sec': total_tokens / total_s if total_s > 0 else float('nan')},
+        'memory': {'peak_rss_bytes': max(rss) if rss else None},
+    }
+
+
+def formatar_metricas(d):
+    pre, dec, e2e, mem = d['prefill'], d['decode'], d['e2e'], d['memory']
+    return '\n'.join([
+        "[METRICS]",
+        f"  prefill_ms:        {pre['latency_ms']:.2f}",
+        f"  decode_mean_ms:    {dec['mean_ms']:.2f}",
+        f"  decode_p95_ms:     {dec['p95_ms']:.2f}",
+        f"  ttft_ms:           {e2e['ttft_ms']:.2f}",
+        f"  overall_tok/s:     {e2e['overall_tokens_per_sec']:.2f}",
+        f"  peak_rss:          {mem.get('peak_rss_bytes')}",
+        f"  prompt_tokens:     {d['input']['prompt_tokens']}",
+        f"  generated_tokens:  {d['input']['generated_tokens']}",
+    ])
 
 
 # 2. Filtros originais e deduplicacao por pergunta antes do split.
@@ -420,6 +452,8 @@ def timed_generate(model, question, max_new_tokens, fixed_output=False):
         "new_tokens": n_new,
         "latency_s": total,
         "ttft_s": ttft,
+        "prefill_s": timer.times[0] - timer.prompt_time,
+        "peak_rss_bytes": peak_rss_bytes(),
         "tokens_per_s": n_new / total if total > 0 else float("nan"),
         "decode_tokens_per_s": (n_new - 1) / decode_time if n_new > 1 and decode_time > 0 else float("nan"),
         "finished": bool(output_ids and output_ids[-1] in (eos_ids or [])),
@@ -480,6 +514,7 @@ class TokenTimer(BaseStreamer):
         self.times = []
         self.ids = []
         self.is_prompt = True
+        self.prompt_time = None
 
     def put(self, value):
         ids = value.tolist()
@@ -491,6 +526,7 @@ class TokenTimer(BaseStreamer):
             if ids != self.prompt_ids:
                 raise ValueError('Primeiro callback nao corresponde ao prompt.')
             self.is_prompt = False
+            self.prompt_time = time.perf_counter()
             return
         # O experimento atual usa geracao autoregressiva, um token por callback.
         # Falhar explicitamente se o backend mudar esse contrato.
@@ -508,6 +544,8 @@ def timed_answer(question, max_new_tokens=SPEED_MAX_NEW_TOKENS):
     return {
         "prompt_tokens": result["prompt_tokens"],
         "ttft_s": result["ttft_s"],
+        "prefill_s": result["prefill_s"],
+        "peak_rss_bytes": result["peak_rss_bytes"],
         "tokens_per_s": result["decode_tokens_per_s"],
         "total_s": result["latency_s"],
         "ttlt_s": result["ttlt_s"],
@@ -629,12 +667,19 @@ def save_summaries(condition, train_info, rows, peak):
         'answer_words': df['answer_words'].mean(), 'reference_words': df['reference_words'].mean(),
         'gen_peak_vram_gb': peak})
     escrever_csv(f'{EXTENDED_DIR}/metrics_summary.csv', extended_summaries)
-    for column, label, better in [('ttft_s', 'TTFT (s)', 'lower'), ('tokens_per_s', 'Tokens per second', 'higher'),
-                                   ('total_s', 'Total response time (s)', 'lower'), ('ttlt_s', 'TTLT (s)', 'lower')]:
-        values = [r[column] for r in speed_rows if r['condition'] == condition]
-        mean, median, p99 = mean_median_p99(values, better)
-        benchmark_summaries.append({'model': MODEL_NAME, 'category': 'speed', 'metric': label,
-            'condition': condition, 'mean': mean, 'median': median, 'p99_pior_caso': p99, 'better': better, 'n': len(values)})
+    speed_cond = [r for r in speed_rows if r['condition'] == condition]
+    speed = metricas_velocidade(speed_cond)
+    print(f'{MODEL_NAME} | {condition}', formatar_metricas(speed), sep='\n', flush=True)
+    for metric, value, better in [('prefill_ms', speed['prefill']['latency_ms'], 'lower'),
+                                  ('decode_mean_ms', speed['decode']['mean_ms'], 'lower'),
+                                  ('decode_p95_ms', speed['decode']['p95_ms'], 'lower'),
+                                  ('ttft_ms', speed['e2e']['ttft_ms'], 'lower'),
+                                  ('overall_tok/s', speed['e2e']['overall_tokens_per_sec'], 'higher'),
+                                  ('peak_rss_bytes', speed['memory']['peak_rss_bytes'], 'lower'),
+                                  ('prompt_tokens', speed['input']['prompt_tokens'], None),
+                                  ('generated_tokens', speed['input']['generated_tokens'], None)]:
+        benchmark_summaries.append({'model': MODEL_NAME, 'category': 'speed', 'metric': metric,
+            'condition': condition, 'mean': value, 'better': better, 'n': len(speed_cond)})
     for task, labels in [('MedQA', list('ABCD')), ('PubMedQA', list('ABC'))]:
         selected = [r for r in precision_rows if r['condition'] == condition and r['benchmark'] == task]
         mean, low, high = mean_ci([r['correct'] for r in selected])
