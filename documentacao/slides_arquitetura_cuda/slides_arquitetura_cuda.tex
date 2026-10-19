@@ -18,7 +18,7 @@ pdftitle={Arquitetura CUDA e overhead do Windows 11 no benchmark de latência}}
 
 \title{Arquitetura CUDA e o overhead do Windows 11}
 \author{Benchmark de latência de tokens --- llm-ada-project}
-\date{\texttt{timed\_generate} / \texttt{TokenTimer} --- outubro de 2026}
+\date{\texttt{timed\_generate} / \texttt{TokenTimer} --- RTX 5070 Ti (Windows 11) e T4 (Colab) --- outubro de 2026}
 
 \begin{document}
 \frame{\titlepage}
@@ -126,6 +126,28 @@ matrixAdd<<<numBlocks, threadsPerBlock>>>(A,B,C);
 \end{frame}
 
 \begin{frame}
+\frametitle{Sua GPU: RTX 5070 Ti (Blackwell) \vs T4 do Colab}
+\centering\small\setstretch{1.1}
+\begin{tabular}{lccc}
+\toprule
+& T4 (Turing) & RTX 5070 Ti & RTX 5070 \\
+\midrule
+SMs (CUDA cores) & 40 (2560) & 70 (8960) & 48 (6144) \\
+VRAM & 16 GB GDDR6 & \al{16 GB GDDR7} & 12 GB GDDR7 \\
+Barramento / banda & 256 bit / 300 GB/s & 256 bit / \al{896 GB/s} & 192 bit / 672 GB/s \\
+Tensor cores & 2ª geração & 5ª geração (FP4) & 5ª geração (FP4) \\
+Compute capability & 7.5 (sm\_75) & 12.0 (sm\_120) & 12.0 (sm\_120) \\
+Modelo de driver no Windows & --- & \al{WDDM} & \al{WDDM} \\
+\bottomrule
+\end{tabular}
+\begin{itemize}
+\item 16 GB \so pela especificação NVIDIA é a \al{5070 Ti} (a 5070 desktop tem 12 GB); banda = bits $\times$ 28 Gbps / 8
+\item sm\_120 exige CUDA 12.8+: PyTorch com wheel cu128 (ou mais novo) e bitsandbytes com build 12.8+ (inclui sm120 no Windows)
+\item NF4 do bitsandbytes dequantiza para FP16/BF16: \al{não} usa o FP4 nativo dos tensor cores Blackwell
+\end{itemize}
+\end{frame}
+
+\begin{frame}
 \heading{2. O que o benchmark mede}
 \end{frame}
 
@@ -156,13 +178,14 @@ decode_tokens_per_s = (n_new - 1) / (ttlt - ttft)
 \item \al{Decode}: 1 token por passo, lê \al{todos os pesos} + KV cache para produzir 1 token
 \item Piso de tempo por token:
 \[ t_{\text{piso}} \approx \frac{\text{bytes de pesos} + \text{bytes de KV}}{\text{banda}} \]
-\item Ex.: 4 B parâmetros em 4-bit $\approx$ 2 GB \so $2/300 \approx 6{,}7$ ms/token \so teto $\approx$ 150 tok/s (conta de bolso)
+\item 4 B parâmetros em 4-bit $\approx$ 2 GB (conta de bolso):\\ T4: 6,7 ms/token ($\le$150 tok/s)\\ 5070 Ti: 2,2 ms/token ($\le$450 tok/s)
 \end{itemize}
 \column{0.42\textwidth}
 \begin{itemize}
 \item Batch=1 e dependência token a token: \al{latency-bound}
 \item Poucos blocos por kernel, SMs ociosos, muitos kernels pequenos
 \item Por isso o custo \al{fixo por kernel} (launch, driver, SO) aparece no tok/s
+\item GPU mais rápida = piso menor \so o custo fixo vira uma \al{fração maior}: 600 kernels $\times$ 5 µs = 3 ms $>$ 2,2 ms na 5070 Ti
 \end{itemize}
 \end{columns}
 \end{frame}
@@ -254,7 +277,7 @@ decode_tokens_per_s = (n_new - 1) / (ttlt - ttft)
 \item \al{WDDM}: para GPUs com display; é o padrão em GeForce/RTX
 \item \al{TCC}: só GPUs sem display (Tesla, alguns Quadro/RTX pro, GTX Titan); usa o modelo WDM
 \end{itemize}
-\item \alr{GeForce não suporta TCC} (exceto GTX Titan) \so num PC gamer o benchmark sempre roda em WDDM
+\item \alr{GeForce não suporta TCC} (exceto GTX Titan) \so na sua \al{RTX 5070 Ti} o benchmark sempre roda em WDDM; a ablação TCC não se aplica
 \item Ver/trocar: \texttt{nvidia-smi -q | findstr "Driver Model"}; \texttt{nvidia-smi -i 0 -dm TCC} (admin, sem monitor, reinicia o driver)
 \item TCC tira a GPU do escalonador gráfico: é o mais próximo do Linux dentro do Windows
 \end{itemize}
@@ -310,22 +333,22 @@ Por token de decode $i$:
 \end{frame}
 
 \begin{frame}
-\frametitle{Exemplo numérico (ilustrativo, não medido)}
+\frametitle{Exemplo numérico na escala da 5070 Ti (ilustrativo, não medido)}
 \centering
 \begin{tabular}{lcc}
 \toprule
 & Linux & Windows 11 (WDDM) \\
 \midrule
-$\tilde t^{\,\text{wall}}$ por token & 30,0 ms & 36,0 ms \\
-$\tilde t^{\,\text{GPU}}$ por token (events) & 27,0 ms & 27,2 ms \\
-$O_{\text{host}}$ & 3,0 ms (10\%) & 8,8 ms (24\%) \\
-decode tok/s & 33,3 & 27,8 \\
+$\tilde t^{\,\text{wall}}$ por token & 6,0 ms & 8,4 ms \\
+$\tilde t^{\,\text{GPU}}$ por token (events) & 4,0 ms & 4,1 ms \\
+$O_{\text{host}}$ & 2,0 ms (33\%) & 4,3 ms (51\%) \\
+decode tok/s & 166,7 & 119,0 \\
 \bottomrule
 \end{tabular}
 \begin{itemize}
-\item $\Delta_{\text{Win}} = 6{,}0$ ms/token \so $\%_{\text{Win}} = 6/36 \approx 17\%$
-\item GPU quase igual (27,0 \vs 27,2) \so a diferença é host/driver/SO
-\item Com $K = 600$ kernels/token: $\delta_{\text{launch}} \approx 6\,000/600 = 10$ µs a mais por kernel
+\item $\Delta_{\text{Win}} = 2{,}4$ ms/token \so $\%_{\text{Win}} = 2{,}4/8{,}4 \approx 29\%$
+\item GPU quase igual (4,0 \vs 4,1) \so a diferença é host/driver/SO
+\item Com $K = 600$ kernels/token: $\delta_{\text{launch}} \approx 2\,400/600 = 4$ µs a mais por kernel
 \item Se $t^{\text{GPU}}$ também mudar, olhe clock/potência antes de culpar o Windows
 \end{itemize}
 \end{frame}
@@ -420,17 +443,18 @@ print("wall:", wall, "gpu:", gpu, "O_host:", wall - gpu)
 \item \alg{Fixar/registrar clocks}; descartar runs com throttle
 \item Comparar base \vs fine-tuned com LoRA \al{mesclado} para não medir kernels extras
 \item Piloto de \texttt{torch.compile} + cache estático (CUDA Graphs) para cortar launch overhead
-\item No Windows: HAGS on, sysmem fallback off, desktop fora da GPU; se puder, Linux ou TCC
+\item No Windows (5070 Ti): HAGS on, sysmem fallback off, monitor na iGPU; baseline em Linux nativo (TCC não existe em GeForce)
 \end{itemize}
 \end{frame}
 
 \begin{frame}
 \frametitle{Onde achar slides oficiais e referências}
-\scriptsize\setstretch{1.05}
+\tiny\setstretch{1.05}
 \begin{itemize}
 \item NVIDIA GTC On-Demand, série S. Jones: \url{https://www.nvidia.com/en-us/on-demand/session/gtcfall22-a41101/} (How CUDA Programming Works), \url{https://www.nvidia.com/en-us/on-demand/session/gtcspring23-S51210/}, \url{https://www.nvidia.com/en-us/on-demand/session/gtc24-s62401/}, \url{https://www.nvidia.com/en-us/on-demand/session/gtc25-s72897/}
 \item OLCF/NERSC CUDA Training Series: \url{https://www.olcf.ornl.gov/cuda-training-series/}; DLI Teaching Kits: \url{https://developer.nvidia.com/teaching-kits}
 \item CMU 15-779 L3--4 (Z. Jia, 2025): \url{https://www.cs.cmu.edu/~zhihaoj2/15-779/slides/03-CUDA-programming.pdf}
+\item RTX 5070 family: \url{https://www.nvidia.com/en-us/geforce/graphics-cards/50-series/rtx-5070-family/}; Blackwell compat.: \url{https://docs.nvidia.com/cuda/blackwell-compatibility-guide/}; bitsandbytes: \url{https://huggingface.co/docs/bitsandbytes/main/en/installation}
 \item Turing whitepaper e T4 datasheet (nvidia.com); CUDA Best Practices: \url{https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/}
 \item WDDM/TCC: \url{https://docs.nvidia.com/cuda/cuda-installation-guide-microsoft-windows/}; \texttt{nvidia-smi}: \url{https://docs.nvidia.com/deploy/nvidia-smi/}
 \item HAGS: \url{https://devblogs.microsoft.com/directx/hardware-accelerated-gpu-scheduling/}
