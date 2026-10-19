@@ -15,7 +15,7 @@ from metricas import RunContext, carregar_plugins, executar
 from metricas.runner import montar_contexto
 from registro import escrever_csv
 
-PLUGIN_FAKE = '''
+PLUGIN_FAKE = """
 class Fake:
     nome = 'fake'
     escopo = 'pergunta'
@@ -44,7 +44,7 @@ def criar():
 
 def criar_run():
     return FakeRun()
-'''
+"""
 
 
 def ler(path):
