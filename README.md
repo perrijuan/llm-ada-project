@@ -111,6 +111,38 @@ em tokens/s (maior é melhor) é o P1, a cauda lenta. Com n=20 por condição o 
 emite um aviso; use n>=100 como mínimo. Como o código mudou, use uma nova pasta de saída.
 
 
+## Métricas extras (plugins)
+
+Depois das runs, `rodar_metricas.py` calcula métricas a partir dos arquivos já salvos
+(não usa GPU, salvo se o plugin precisar) e grava `metricas_<nome>.csv` em cada run com `status=ok`:
+```bash
+python rodar_metricas.py campanha_clinico                      # só o builtin desempenho
+python rodar_metricas.py campanha_clinico --plugins metricas.plugins.desempenho metricas.plugins.bert_score
+python rodar_metricas.py campanha_clinico --plugins metricas.plugins.bert_score --ignorar-faltantes
+python consolidar.py campanha_clinico                          # junta em consolidado/metricas_<nome>.csv
+```
+Sem `--ignorar-faltantes`, um plugin que não importa (ex.: `bert_score` não instalado) para tudo
+antes de rodar; com a opção, segue com os demais. O CLI lista por run quais plugins rodaram ou falharam.
+
+Cada plugin é um módulo Python importável (`--plugins pacote.modulo`) com o contrato de `metricas/base.py`:
+
+- `criar()`: função do módulo que devolve o plugin;
+- `nome`: vira `metricas_<nome>.csv`;
+- `escopo`: `"pergunta"` ou `"run"`;
+- `avaliar_pergunta(row) -> dict`: chamado em cada linha de `answers_per_question.csv`
+  (`regime`, `question`, `prediction`, `reference`, tempos...); o CSV recebe `pergunta_idx`, `regime`, `question` + o dict;
+- `avaliar_run(run) -> dict` (ou lista de dicts): chamado uma vez por run com um `RunContext`
+  (`pasta`, `modelo_id`, `modelo`, `status`, `respostas`, `treino`). `treino` é `{tag: linha de registros/treino_<tag>_metricas.csv}`,
+  com `train_runtime` e `training_loss` do Trainer (hoje só a tag `fine-tuned`).
+
+O método do escopo que não é usado pode devolver `{}`. Um modelo/módulo externo de métricas não precisa
+mudar nada no repositório: basta expor essa interface e estar no `PYTHONPATH`.
+`metricas/plugins/bert_score.py` é o modelo para isso (`pip install bert-score`, gera `bert_p`, `bert_r`, `bert_f1`).
+`metricas/plugins/desempenho.py` (builtin, escopo run) dá média/p50/p95 de `latency_s`, `ttft_s`, `tokens_per_s`,
+`decode_tokens_per_s` e `peak_vram_gb` por regime, além de `train_runtime` e `training_loss`.
+Colunas ausentes no CSV são puladas: hoje o pico de VRAM da geração fica em `registros/summary_df.csv` (`gen_peak_vram_gb`), não por pergunta.
+Como `ambiente.json` ainda não grava o ID do Hugging Face, `modelo_id` vem de `registros/model_config.json` (`_name_or_path`) quando faltar.
+
 ## Escopo e validação
 
 Isto adapta o protocolo de comparação informado pelo usuário aos experimentos
