@@ -1,572 +1,445 @@
-% !TeX program = lualatex
-% Compile: lualatex -interaction=nonstopmode -halt-on-error slides_arquitetura_cuda.tex
-\documentclass[aspectratio=169,10pt]{beamer}
-\usepackage{iftex}
-\ifLuaTeX\else\errmessage{Este documento requer LuaLaTeX}\fi
-\usepackage{fontspec}
-\setmainfont{TeX Gyre Heros}
-\setsansfont{TeX Gyre Heros}
-\setmonofont{Latin Modern Mono}[Scale=0.9]
+% Compilar com: lualatex slides_arquitetura_cuda.tex (2x)
+\documentclass[11pt, aspectratio=169, usepdftitle=false]{beamer}
+\usepackage{presentation}
+\usepackage[brazil]{babel}
 \usepackage{tikz}
-\usetikzlibrary{arrows.meta,positioning}
-\usepackage[most]{tcolorbox}
-\usepackage{fancyvrb}
-\usepackage{booktabs}
-\definecolor{navy}{HTML}{142D4E}
-\definecolor{teal}{HTML}{008878}
-\definecolor{pale}{HTML}{EDF5F7}
-\definecolor{alerta}{HTML}{B5462B}
-\hypersetup{colorlinks=true,urlcolor=teal,linkcolor=navy,pdftitle={Arquitetura CUDA para o benchmark de latência}}
-\setbeamertemplate{navigation symbols}{}
-\setbeamercolor{normal text}{fg=navy}
-\setbeamercolor{frametitle}{fg=white,bg=navy}
-\setbeamercolor{structure}{fg=teal}
-\setbeamercolor{itemize item}{fg=teal}
-\setbeamercolor{itemize subitem}{fg=teal}
-\setbeamertemplate{itemize item}[circle]
-\setbeamertemplate{itemize subitem}[circle]
-\setbeamerfont{frametitle}{size=\large,series=\bfseries}
-\setbeamertemplate{frametitle}{\nointerlineskip\begin{beamercolorbox}[wd=\paperwidth,ht=8mm,dp=3mm,leftskip=5mm]{frametitle}\usebeamerfont{frametitle}\insertframetitle\end{beamercolorbox}}
-\setbeamertemplate{footline}{\hfill{\tiny\color{teal}Arquitetura CUDA e benchmark de latência \quad \insertframenumber\,/\,\inserttotalframenumber}\hspace{4mm}\vspace{2mm}}
-\newcommand{\parte}[1]{{\small\bfseries\color{teal}#1}\par\smallskip}
-\newcommand{\nota}[1]{\par\smallskip{\scriptsize\color{teal}#1}}
-\newenvironment{codebox}{\VerbatimEnvironment\begin{tcolorbox}[colback=pale,colframe=pale,boxrule=0pt,arc=2mm,left=2mm,right=2mm,top=1mm,bottom=1mm]\begin{Verbatim}[fontsize=\scriptsize]}{\end{Verbatim}\end{tcolorbox}}
-\newenvironment{codeboxtiny}{\VerbatimEnvironment\begin{tcolorbox}[colback=pale,colframe=pale,boxrule=0pt,arc=2mm,left=1mm,right=1mm,top=0.5mm,bottom=0.5mm]\begin{Verbatim}[fontsize=\fontsize{6}{6.6}\selectfont]}{\end{Verbatim}\end{tcolorbox}}
-\tikzset{box/.style={fill=pale,rounded corners=2mm,inner sep=2mm,align=center},
-         arr/.style={-{Stealth[length=2mm]},teal,thick}}
+\usetikzlibrary{positioning,arrows.meta,calc}
+\usepackage{listings}
+\newcommand{\vs}{\textit{vs.}\ }
+\hypersetup{pdfpagemode=UseNone, hidelinks, pdfdisplaydoctitle=true,
+pdftitle={Arquitetura CUDA e overhead do Windows 11 no benchmark de latência}}
+
+\lstset{basicstyle=\ttfamily\scriptsize\setstretch{1}, keywordstyle=\color{NavyBlue}, commentstyle=\color{DarkGray},
+  stringstyle=\color{RubineRed}, columns=fullflexible, keepspaces=true, showstringspaces=false,
+  backgroundcolor=\color{LightGray!40}, frame=none, xleftmargin=2mm, framexleftmargin=2mm,
+  aboveskip=2mm, belowskip=1mm, language=Python, morekeywords={with,as}, literate={á}{{\'a}}1 {é}{{\'e}}1 {ã}{{\~a}}1 {ç}{{\c{c}}}1 {ó}{{\'o}}1 {í}{{\'i}}1 {ú}{{\'u}}1 {õ}{{\~o}}1 {ê}{{\^e}}1}
+\tikzset{bx/.style={draw=DarkGray, rounded corners=2pt, fill=LightGray!45, align=center, font=\scriptsize, inner sep=3pt},
+  ar/.style={-{Stealth[length=2mm]}, DarkGray, thick}}
+
+\title{Arquitetura CUDA e o overhead do Windows 11}
+\author{Benchmark de latência de tokens --- llm-ada-project}
+\date{\texttt{timed\_generate} / \texttt{TokenTimer} --- outubro de 2026}
 
 \begin{document}
+\frame{\titlepage}
 
-% ---------------------------------------------------------------
-\begin{frame}[plain]
-\begin{tcolorbox}[colback=navy,colframe=navy,arc=2mm,boxrule=0pt,left=6mm,right=6mm,top=8mm,bottom=8mm]
-{\color{white}\small llm-ada-project | documentação\par\medskip
-\fontsize{24}{28}\selectfont\bfseries Arquitetura CUDA NVIDIA\par
-\fontsize{15}{19}\selectfont\mdseries para medir e otimizar a latência de tokens\par\medskip
-\normalfont\small Foco: \texttt{timed\_generate} e \texttt{TokenTimer} em \texttt{modelos/*.py}}
-\end{tcolorbox}
-\vspace{4mm}
-\small
-\begin{columns}[T]
-\column{0.5\textwidth}
-\textbf{Roteiro}
-\begin{enumerate}\scriptsize
-\item SM, warp e warp scheduler
-\item Hierarquia de memória
-\item Lançamento de kernels, CUDA graphs, \texttt{torch.compile}
-\item Sincronização host-device e streamer
+\begin{frame}
+\frametitle{Roteiro}
+\begin{enumerate}
+\item Arquitetura CUDA: abstrações e como a GPU executa (base: CMU 15-779, aulas 3--4)
+\item Por que o decode batch=1 é latency-bound e bandwidth-bound
+\item Launch, sincronização, streamer, clocks, tensor cores e 4-bit no nosso benchmark
+\item \al{Windows 11}: de onde vem o overhead e \al{como calculá-lo}
+\item Protocolo de medição e checklist
 \end{enumerate}
-\column{0.5\textwidth}
-\vspace{\baselineskip}
-\begin{enumerate}\scriptsize\setcounter{enumi}{4}
-\item DVFS, clocks e warm-up
-\item Tensor cores e quantização 4-bit
-\item Checklist para o benchmark
-\item Onde achar slides da NVIDIA
-\end{enumerate}
-\end{columns}
-\nota{GPU de referência: NVIDIA T4 (Turing, Colab). Os números são do datasheet/whitepaper; as estimativas estão marcadas como tal. Nada aqui foi executado em GPU.}
+\vspace{2mm}
+{\footnotesize\color{DarkGray} Nada aqui foi executado em GPU: esta máquina não tem CUDA. Códigos e exemplos numéricos são propostas para rodar no Colab T4 / PC Windows.}
 \end{frame}
 
-% ---------------------------------------------------------------
-\begin{frame}[fragile]{O que o benchmark mede hoje}
+\begin{frame}
+\heading{1. Arquitetura CUDA}
+\end{frame}
+
+\begin{frame}[fragile]
+\frametitle{Abstrações CUDA: grid, bloco, thread}
 \begin{columns}[T]
 \column{0.5\textwidth}
-\begin{codebox}
-cuda_sync()
-start = time.perf_counter()
-generated = model.generate(**inputs,
-    min_new_tokens=160, max_new_tokens=160,
-    do_sample=False, use_cache=True,
-    streamer=timer)          # TokenTimer
-cuda_sync()
-total = time.perf_counter() - start
-ttft = timer.times[0]  - start
+\begin{itemize}
+\item \al{Host} (CPU) lança um \al{kernel}; o \al{device} (GPU) executa
+\item Kernel = grid de blocos; bloco = até 1024 threads
+\item Cada thread acha seus dados por \texttt{blockIdx}, \texttt{threadIdx}
+\item Blocos são \al{independentes}: a GPU os executa em qualquer ordem
+\item Lançamento é \al{assíncrono}: a CPU segue em frente
+\end{itemize}
+\column{0.48\textwidth}
+\begin{lstlisting}[language=C, basicstyle=\ttfamily\tiny\setstretch{1}]
+__global__ void matrixAdd(float A[Ny][Nx],
+    float B[Ny][Nx], float C[Ny][Nx]) {
+  int i = blockIdx.x*blockDim.x + threadIdx.x;
+  int j = blockIdx.y*blockDim.y + threadIdx.y;
+  C[j][i] = A[j][i] + B[j][i];
+}
+// host
+dim3 threadsPerBlock(4, 3);
+dim3 numBlocks(Nx/4, Ny/3);
+matrixAdd<<<numBlocks, threadsPerBlock>>>(A,B,C);
+\end{lstlisting}
+{\footnotesize\color{DarkGray} Exemplo adaptado de CMU 15-779 (Z. Jia, 2025).}
+\end{columns}
+\end{frame}
+
+\begin{frame}
+\frametitle{Do bloco ao warp: como a GPU executa}
+\begin{columns}[T]
+\column{0.52\textwidth}
+\begin{itemize}
+\item O escalonador mapeia blocos em \al{SMs} enquanto houver recursos (registradores, shared, slots de warp)
+\item Bloco é quebrado em \al{warps} de 32 threads (SIMT: mesma instrução)
+\item \al{Warp scheduler}: a cada ciclo escolhe um warp pronto; troca de warp esconde a latência da memória
+\item \texttt{if} divergente no warp = caminhos serializados
+\item T4 (Turing): 40 SMs, 4 schedulers/SM, 32 warps/SM
+\end{itemize}
+\column{0.46\textwidth}
+\begin{tikzpicture}[node distance=3mm]
+\node[bx, minimum width=5.6cm] (g) {GPU --- grid de blocos};
+\node[bx, below=of g, minimum width=2.6cm, xshift=-1.5cm] (s1) {SM 0\\bloco 0, bloco 2};
+\node[bx, below=of g, minimum width=2.6cm, xshift=1.5cm] (s2) {SM 1\\bloco 1, bloco 3};
+\node[bx, below=of s1, minimum width=2.6cm] (w) {warps de 32 threads};
+\node[bx, below=of s2, minimum width=2.6cm] (ws) {4 warp schedulers};
+\node[bx, below=5mm of $(w)!0.5!(ws)$, minimum width=5.6cm] (r) {registradores \;|\; L1/shared 96 KB \;|\; tensor cores};
+\draw[ar] (g) -- (s1); \draw[ar] (g) -- (s2); \draw[ar] (s1) -- (w); \draw[ar] (s2) -- (ws);
+\end{tikzpicture}
+\end{columns}
+\end{frame}
+
+\begin{frame}
+\frametitle{Hierarquia de memória (CUDA e T4)}
+\begin{columns}[T]
+\column{0.5\textwidth}
+\begin{itemize}
+\item Modelo CUDA: privada por thread (registradores), \al{shared} por bloco, \al{global} para todos
+\item Shared + \texttt{\_\_syncthreads()}: threads do bloco cooperam (tiling)
+\item Em GPUs de datacenter (A100/H100) a global é \al{HBM}; na \al{T4 é GDDR6}, 16 GB, 300 GB/s
+\item L2 (4 MB na T4) fica entre os SMs e a DRAM
+\end{itemize}
+\column{0.46\textwidth}
+\centering
+\begin{tikzpicture}[node distance=1.5mm]
+\node[bx, minimum width=2.4cm] (a) {registradores\\$\sim$ 1 ciclo};
+\node[bx, below=of a, minimum width=3.4cm] (b) {L1 / shared (por SM)};
+\node[bx, below=of b, minimum width=4.4cm] (c) {L2 4 MB (todos os SMs)};
+\node[bx, below=of c, minimum width=5.4cm] (d) {global: GDDR6 300 GB/s (T4) / HBM};
+\node[bx, below=of d, minimum width=5.4cm, fill=white] (e) {RAM do host via PCIe (bem mais lenta)};
+\end{tikzpicture}
+\end{columns}
+\end{frame}
+
+\begin{frame}
+\frametitle{Tensor cores}
+\begin{itemize}
+\item Unidade de multiplicação de matrizes dentro do SM (desde Volta; Turing na T4)
+\item T4: 65 TFLOPS FP16, 130 TOPS INT8, 260 TOPS INT4 \vs 8,1 TFLOPS FP32 nos CUDA cores
+\item Só rendem com matrizes grandes (GEMM): \al{prefill}
+\item No \al{decode} batch=1 a conta é matriz $\times$ vetor (GEMV): tensor core fica quase ocioso
+\item Da GTX 980 (2014) à H100 (2022): 16 \so 132 SMs e 4,6 \so $\sim$1000 TFLOPS, principalmente por tensor cores (CMU 15-779)
+\end{itemize}
+\end{frame}
+
+\begin{frame}
+\heading{2. O que o benchmark mede}
+\end{frame}
+
+\begin{frame}[fragile]
+\frametitle{A janela de tempo do \texttt{timed\_generate}}
+\begin{lstlisting}
+cuda_sync(); start = time.perf_counter()
+generated = model.generate(**inputs, ..., use_cache=True, streamer=timer)
+cuda_sync(); total = time.perf_counter() - start
+ttft = timer.times[0] - start          # 1o token (prefill + 1 passo)
 ttlt = timer.times[-1] - start
-\end{codebox}
-\scriptsize
+decode_tokens_per_s = (n_new - 1) / (ttlt - ttft)
+\end{lstlisting}
 \begin{itemize}
-\item \texttt{TokenTimer.put} anota \texttt{perf\_counter()} quando cada token \textbf{chega na CPU}.
-\item Warm-up: 1 chamada de 8 tokens antes de cada bloco.
-\item \texttt{SPEED\_N = 20} perguntas, batch = 1, greedy.
+\item Tudo é \al{relógio da CPU}: inclui GPU + Python + driver + SO
+\item \texttt{TokenTimer.put}: 1º callback recebe o \al{prompt inteiro} (\texttt{tolist()} + comparação) dentro do TTFT
+\item Cada token: \texttt{tokens.cpu()} (cópia D\so H) + callback Python
+\item Mesmo código nos 4 scripts (\texttt{qwen35}, \texttt{gemma4}, \texttt{huatuogpt}, \texttt{medgemma})
 \end{itemize}
-\column{0.48\textwidth}
-\begin{center}
-\begin{tikzpicture}[x=1cm,y=0.8cm]
-\draw[navy,thick,->] (0,0) -- (6,0) node[right,font=\tiny]{tempo};
-\fill[teal!70] (0.3,0.25) rectangle (2.0,0.75);
-\node[font=\tiny,white] at (1.15,0.5) {prefill};
-\foreach \x in {2.1,2.6,3.1,3.6,4.1,4.6,5.1}{\fill[navy!60] (\x,0.25) rectangle (\x+0.4,0.75);}
-\node[font=\tiny] at (3.7,1.05) {decode: 1 token por passo};
-\draw[alerta,thick] (0.3,-0.2) -- (0.3,0.9); \node[font=\tiny,alerta] at (0.3,-0.45) {start};
-\draw[alerta,thick] (2.0,-0.2) -- (2.0,0.9); \node[font=\tiny,alerta] at (2.0,-0.45) {TTFT};
-\draw[alerta,thick] (5.5,-0.2) -- (5.5,0.9); \node[font=\tiny,alerta] at (5.5,-0.45) {TTLT};
-\end{tikzpicture}
-\end{center}
-\scriptsize
-\textbf{TTFT} = prefill do prompt inteiro + 1º token.\\
-\textbf{decode tok/s} = $(N-1)/(\text{TTLT}-\text{TTFT})$.\\[4pt]
-Os dois regimes usam a GPU de formas diferentes: o prefill é limitado por \textbf{compute}; o decode, por \textbf{memória e latência}. O resto do deck explica por quê.
+\end{frame}
+
+\begin{frame}
+\frametitle{Prefill compute-bound, decode bandwidth-bound}
+\begin{columns}[T]
+\column{0.55\textwidth}
+\begin{itemize}
+\item \al{Prefill}: $N$ tokens juntos, GEMM, muita conta por byte lido \so tensor cores
+\item \al{Decode}: 1 token por passo, lê \al{todos os pesos} + KV cache para produzir 1 token
+\item Piso de tempo por token:
+\[ t_{\text{piso}} \approx \frac{\text{bytes de pesos} + \text{bytes de KV}}{\text{banda}} \]
+\item Ex.: 4 B parâmetros em 4-bit $\approx$ 2 GB \so $2/300 \approx 6{,}7$ ms/token \so teto $\approx$ 150 tok/s (conta de bolso)
+\end{itemize}
+\column{0.42\textwidth}
+\begin{itemize}
+\item Batch=1 e dependência token a token: \al{latency-bound}
+\item Poucos blocos por kernel, SMs ociosos, muitos kernels pequenos
+\item Por isso o custo \al{fixo por kernel} (launch, driver, SO) aparece no tok/s
+\end{itemize}
 \end{columns}
 \end{frame}
 
-% ---------------------------------------------------------------
-\begin{frame}{1. Hierarquia: GPU $\rightarrow$ SM $\rightarrow$ warp $\rightarrow$ thread}
+\begin{frame}
+\frametitle{Launch overhead, CUDA Graphs e \texttt{torch.compile}}
+\begin{itemize}
+\item Cada passo de decode = centenas de kernels (camadas $\times$ \{attn, MLP, norm, dequant, LoRA\})
+\item Cada launch custa alguns µs de CPU + driver; se o kernel dura poucos µs, a GPU espera a CPU
+\item \al{CUDA Graphs}: captura a sequência e relança com uma chamada; exige formas e endereços fixos
+\item \texttt{torch.compile(mode="reduce-overhead")} + \texttt{cache\_implementation="static"} usa CUDA Graphs no Transformers
+\item No Windows: Inductor precisa de Triton (\texttt{triton-windows}, comunitário) \so validar antes com Unsloth/bitsandbytes/LoRA
+\end{itemize}
+\end{frame}
+
+\begin{frame}
+\frametitle{Sincronização host-device e streamer}
 \begin{columns}[T]
-\column{0.52\textwidth}
-\begin{tikzpicture}[x=1cm,y=1cm]
-\draw[navy,thick,rounded corners=2mm] (0,0) rectangle (6.4,4.3);
-\node[font=\scriptsize\bfseries,anchor=north west] at (0.1,4.15) {T4: 40 SMs, L2 4 MB, 16 GB GDDR6};
-\draw[teal,thick,rounded corners=2mm,fill=pale] (0.2,0.2) rectangle (4.6,3.6);
-\node[font=\tiny\bfseries,anchor=north west] at (0.25,3.55) {1 SM (Turing)};
-\foreach \i/\y in {0/2.55,1/1.75,2/0.95}{
-  \draw[navy,fill=white,rounded corners=1mm] (0.35,\y) rectangle (3.0,\y+0.7);
-  \node[font=\tiny,align=left,anchor=west] at (0.4,\y+0.35) {bloco \i: 1 warp scheduler\\16 FP32 + 2 tensor cores};}
-\node[font=\tiny] at (1.7,0.55) {+ bloco 3 (4 blocos por SM)};
-\draw[navy,fill=white,rounded corners=1mm] (3.15,0.35) rectangle (4.45,3.25);
-\node[font=\tiny,align=center] at (3.8,1.8) {96 KB\\L1 +\\shared\\[3pt]256 KB\\registr.};
-\foreach \k in {0,...,5}{\draw[navy,fill=pale] (4.9,0.3+\k*0.55) rectangle (6.2,0.75+\k*0.55);}
-\node[font=\tiny] at (5.55,3.8) {mais SMs};
-\end{tikzpicture}
+\column{0.5\textwidth}
+\begin{itemize}
+\item \texttt{.cpu()}, \texttt{.item()}, \texttt{.tolist()}, \texttt{bool(tensor)} e \texttt{synchronize()} \al{bloqueiam} a CPU até a GPU terminar
+\item O \texttt{generate} já checa parada (\texttt{bool(...)}) a cada token: 1 sync/token com ou sem streamer
+\item Streamer adiciona: cópia D\so H + chamada Python por token
+\item Cada sync = ida e volta pelo driver: \al{é aí que o Windows pesa}
+\end{itemize}
 \column{0.46\textwidth}
-\scriptsize
-\begin{itemize}
-\item \textbf{Kernel} = grade de \textbf{blocos}; cada bloco roda inteiro em 1 SM.
-\item \textbf{Warp} = 32 threads que executam a mesma instrução (SIMT).
-\item Cada \textbf{warp scheduler} escolhe, a cada ciclo, um warp \emph{pronto} e despacha sua instrução.
-\item Um warp que espera memória ($\sim$centenas de ciclos) fica parado; o scheduler troca para outro sem custo. Isso é \textbf{latency hiding}.
-\item Para esconder a latência é preciso ter \textbf{muitos warps em voo} (ocupação) e trabalho independente.
-\end{itemize}
-\nota{Fonte: NVIDIA Turing Architecture Whitepaper; T4 datasheet.}
-\end{columns}
-\end{frame}
-
-% ---------------------------------------------------------------
-\begin{frame}{1. Por que o decode batch = 1 é \emph{latency-bound}}
-\begin{columns}[T]
-\column{0.5\textwidth}
-\scriptsize
-\begin{itemize}
-\item Cada passo depende do anterior: o token $t$ só existe depois do \texttt{argmax} do passo $t-1$. Não dá para paralelizar no tempo.
-\item Com batch = 1, cada camada linear vira \textbf{GEMV} ($1 \times d$ por $d \times d'$): pouca matemática, muitos pesos lidos.
-\item Kernels pequenos (RMSNorm, RoPE, residual, softmax) lançam poucos blocos: parte dos 40 SMs fica ociosa e há poucos warps para esconder latência.
-\item Um passo de decode = \textbf{centenas de kernels} em sequência. O tempo por token é a soma das latências, não da vazão.
-\end{itemize}
-\column{0.48\textwidth}
-\begin{center}
-\begin{tikzpicture}[x=1cm,y=1cm]
-\node[box,text width=2.1cm,font=\tiny] (p) at (0,0) {\textbf{Prefill}\\P tokens juntos\\GEMM $P\times d$};
-\node[box,text width=2.1cm,font=\tiny] (d) at (3,0) {\textbf{Decode}\\1 token\\GEMV $1\times d$};
-\node[font=\tiny,align=center] at (0,-1.0) {muitos blocos\\SMs cheios\\tensor cores úteis};
-\node[font=\tiny,align=center] at (3,-1.0) {poucos blocos\\SMs esperando\\memória/CPU};
+\begin{tikzpicture}[x=1cm,y=0.55cm]
+\node[font=\scriptsize] at (-0.6,1) {CPU}; \node[font=\scriptsize] at (-0.6,0) {GPU};
+\foreach \x in {0,2.1,4.2}{
+ \fill[NavyBlue!50] (\x,0.8) rectangle +(0.5,0.4);
+ \fill[DarkGray!70] (\x+0.5,-0.2) rectangle +(1.1,0.4);
+ \fill[RubineRed!60] (\x+1.6,0.8) rectangle +(0.5,0.4);}
+\node[font=\tiny, align=left] at (2.6,-1.5) {azul: launch \quad cinza: kernels\\vermelho: sync + streamer (GPU ociosa)};
 \end{tikzpicture}
-\end{center}
-\scriptsize
-\textbf{Consequência para o benchmark:} o decode tok/s do projeto mede mais a \emph{latência de memória e de lançamento} do que a capacidade de cálculo da GPU. Mudanças pequenas de overhead aparecem direto no resultado.
 \end{columns}
 \end{frame}
 
-% ---------------------------------------------------------------
-\begin{frame}{2. Hierarquia de memória (T4)}
-\begin{columns}[T]
-\column{0.5\textwidth}
-\begin{tikzpicture}[x=1cm,y=0.62cm]
-\foreach \y/\w/\t in {4/1.4/{Registradores\\256 KB/SM},3/2.4/{L1 / shared\\96 KB/SM},2/3.4/{L2\\4 MB (todos os SMs)},1/4.6/{DRAM GDDR6\\16 GB, 300 GB/s}}{
-  \fill[pale,draw=teal] (-\w/2,\y-0.95) rectangle (\w/2,\y-0.05);
-  \node[font=\tiny,align=center] at (0,\y-0.5) {\t};}
-\draw[arr] (2.9,0.1) -- (2.9,3.9);
-\node[font=\tiny,align=left,anchor=west] at (3.0,2.0) {mais rápida\\menor\\mais perto\\do warp};
-\end{tikzpicture}
-\column{0.48\textwidth}
-\scriptsize
+\begin{frame}
+\frametitle{Clocks (DVFS), warm-up e \texttt{nvidia-smi -lgc}}
 \begin{itemize}
-\item \textbf{Registradores}: privados de cada thread; o acesso mais rápido.
-\item \textbf{Shared memory}: controlada pelo programador, compartilhada no bloco; é onde kernels de matmul fazem \emph{tiling}.
-\item \textbf{L2}: cache comum a todos os SMs. Com 4 MB, não cabem os pesos de um modelo de 4B parâmetros: cada token lê os pesos da DRAM de novo.
-\item \textbf{DRAM}: a T4 usa \textbf{GDDR6}, não HBM. HBM fica nas GPUs de datacenter maiores (A100, H100); a lógica é a mesma, só a banda muda.
+\item A GPU sobe e desce o clock conforme carga, temperatura e limite de potência (DVFS)
+\item Warm-up atual = \al{8 tokens}: curto para estabilizar clock, alocador e caches de kernel
+\item Proposta: 3 gerações completas (160 tokens) descartadas antes de medir
+\item \texttt{nvidia-smi -lgc 1590,1590} trava o clock (Linux: root; Windows: admin, depende de GPU/driver; no Colab normalmente sem permissão) \so sempre \al{registrar} clock:
+\item[] \texttt{nvidia-smi --query-gpu=clocks.sm,clocks.mem,temperature.gpu,power.draw,} \texttt{clocks\_throttle\_reasons.active --format=csv -lms 200}
 \end{itemize}
-\nota{Turing: os 96 KB por SM dividem-se em 32/64 KB de shared + 64/32 KB de L1 (whitepaper).}
-\end{columns}
 \end{frame}
 
-% ---------------------------------------------------------------
-\begin{frame}{2. Decode é \emph{bandwidth-bound}, prefill é \emph{compute-bound}}
-\begin{columns}[T]
-\column{0.5\textwidth}
-\begin{tikzpicture}[x=1cm,y=1cm]
-\draw[navy,->] (0,0) -- (5.2,0) node[below left,font=\tiny]{FLOP/byte (log)};
-\draw[navy,->] (0,0) -- (0,3.2) node[above,font=\tiny]{FLOP/s};
-\draw[teal,very thick] (0,0) -- (3.2,2.6) -- (5.0,2.6);
-\node[font=\tiny,teal,anchor=south] at (4.1,2.6) {65 TFLOPS FP16};
-\node[font=\tiny,teal,rotate=39] at (1.3,1.35) {300 GB/s};
-\draw[dashed,navy] (3.2,0) -- (3.2,2.6); \node[font=\tiny] at (3.2,-0.25) {$\approx$217};
-\fill[alerta] (0.6,0.49) circle (2pt); \node[font=\tiny,alerta,anchor=west] at (0.65,0.3) {decode};
-\fill[navy] (4.4,2.6) circle (2pt); \node[font=\tiny,anchor=north] at (4.4,2.5) {prefill};
-\end{tikzpicture}
-\nota{Roofline simplificado. Ponto de equilíbrio = 65e12 / 300e9 $\approx$ 217 FLOP/byte.}
-\column{0.48\textwidth}
-\scriptsize
-\textbf{Intensidade aritmética} (FLOP por byte lido):
+\begin{frame}
+\frametitle{Quantização 4-bit (NF4) e dequantização}
 \begin{itemize}
-\item Decode: 2 FLOP por peso por token. Peso FP16 = 2 bytes $\Rightarrow$ $\sim$1 FLOP/B; peso 4-bit $\Rightarrow$ $\sim$4 FLOP/B. Muito abaixo de 217: a GPU espera a DRAM.
-\item Prefill com $P$ tokens reusa cada peso $P$ vezes $\Rightarrow$ $\sim P\times$ mais FLOP/B. Prompts de centenas de tokens (3/5-shot) passam do equilíbrio: limite de compute.
+\item \texttt{LOAD\_IN\_4BIT = True}: pesos em NF4 (bitsandbytes / QLoRA) \so 4$\times$ menos bytes que FP16
+\item Decode é bandwidth-bound \so menos bytes ajuda
+\item Mas cada matmul precisa \al{dequantizar} para FP16 antes/durante a conta: kernels extras
+\item Condição fine-tuned soma \al{LoRA} (r=8) em attn + MLP: mais kernels por token
+\item Diferença de tok/s base \vs fine-tuned mistura modelo e \al{número de kernels}: comparar com LoRA mesclado (\texttt{merge\_and\_unload}) ou citar a ressalva
 \end{itemize}
-\textbf{Conta de bolso (estimativa):} 4B parâmetros em 4-bit $\approx$ 2--2,5 GB lidos por token $\Rightarrow$ piso de $\sim$7--8 ms/token $\Rightarrow$ teto de $\sim$120--140 tok/s. Se o medido ficar muito abaixo, o gargalo é overhead (lançamento, Python, sync, dequant), não a banda.
-\nota{O KV cache também é lido a cada token e cresce com o prompt: o 5-shot paga mais por token.}
-\end{columns}
 \end{frame}
 
-% ---------------------------------------------------------------
-\begin{frame}{3. Overhead de lançamento de kernels}
-\begin{center}
-\begin{tikzpicture}[x=1cm,y=1cm]
-\node[font=\tiny\bfseries,anchor=east] at (-0.1,1) {CPU};
-\node[font=\tiny\bfseries,anchor=east] at (-0.1,0) {GPU};
-\foreach \x in {0,1.4,2.8,4.2,5.6,7.0,8.4}{\fill[navy!60] (\x,0.8) rectangle (\x+1.2,1.2);}
-\foreach \x in {1.2,2.6,4.0,5.4,6.8,8.2,9.6}{\fill[teal] (\x,-0.2) rectangle (\x+0.35,0.2);}
-\node[font=\tiny,white] at (0.6,1) {Python+launch};
-\node[font=\tiny,alerta] at (5.0,-0.5) {GPU ociosa entre kernels curtos};
-\end{tikzpicture}
-\end{center}
-\begin{columns}[T]
-\column{0.5\textwidth}
-\scriptsize
-\begin{itemize}
-\item Cada kernel custa alguns µs de CPU para ser enfileirado (Python do HF + dispatcher do PyTorch + driver).
-\item Por camada: norm, q/k/v, RoPE, atenção, o\_proj, norm, gate/up, ativação, down, residuais (+ dequant 4-bit + LoRA no fine-tuned). Vezes dezenas de camadas.
-\end{itemize}
-\column{0.48\textwidth}
-\scriptsize
-\begin{itemize}
-\item No decode muitos kernels duram poucos µs: a CPU não consegue enfileirar rápido o bastante e a GPU fica parada. O passo é \textbf{CPU-bound}.
-\item Sintoma: GPU util. alta no \texttt{nvidia-smi}, mas buracos na timeline do Nsight Systems.
-\item No benchmark: a condição \textbf{fine-tuned} tem adaptadores LoRA (r=8) e por isso mais kernels por token. Parte da diferença de velocidade vem daí, não do modelo.
-\end{itemize}
-\end{columns}
+\begin{frame}
+\heading{3. Overhead do Windows 11}
 \end{frame}
 
-% ---------------------------------------------------------------
-\begin{frame}[fragile]{3. CUDA graphs e \texttt{torch.compile}}
-\begin{columns}[T]
-\column{0.5\textwidth}
-\scriptsize
-\begin{itemize}
-\item \textbf{CUDA graph}: captura a sequência de kernels de um passo uma vez e depois relança tudo com \textbf{uma} chamada. Some o custo por kernel.
-\item Exige formas e endereços fixos: o KV cache precisa ser \textbf{estático} (pré-alocado no tamanho máximo).
-\item \texttt{torch.compile(mode="reduce-overhead")} gera kernels fundidos (Triton) e usa CUDA graphs.
-\item Custos: compilação lenta nas primeiras chamadas e recompilação quando a forma muda. O warm-up precisa cobrir isso.
-\end{itemize}
-\column{0.48\textwidth}
-\begin{codebox}
-# KV cache fixo + forward compilado (HF)
-model.generation_config.cache_implementation = "static"
-model.forward = torch.compile(model.forward,
-                              mode="reduce-overhead")
-\end{codebox}
-\scriptsize
-\textbf{Cuidados neste projeto}
-\begin{itemize}
-\item Unsloth + bitsandbytes 4-bit + LoRA com \texttt{torch.compile} não tem compatibilidade garantida: testar num piloto antes.
-\item Se usar, aplicar igual nos 4 modelos e nas 4 condições e registrar no manifesto; senão a comparação fica injusta.
-\end{itemize}
-\end{columns}
+\begin{frame}
+\frametitle{Pilha de software: Linux \vs Windows 11}
+\centering
+\begin{tikzpicture}[node distance=1.5mm]
+\node[bx, minimum width=4.6cm] (p) {Python + PyTorch + Transformers};
+\node[bx, below=of p, minimum width=4.6cm] (r) {CUDA runtime / driver (modo usuário)};
+\node[bx, below=of r, minimum width=4.6cm] (k) {driver NVIDIA no kernel};
+\node[bx, below=of k, minimum width=4.6cm] (g) {GPU};
+\node[above=1mm of p, font=\small] {Linux};
+\node[bx, right=1.8cm of p, minimum width=5.4cm] (p2) {Python + PyTorch + Transformers};
+\node[bx, below=of p2, minimum width=5.4cm] (r2) {CUDA runtime / driver (modo usuário)};
+\node[bx, below=of r2, minimum width=5.4cm, fill=RubineRed!20] (k2) {\al{WDDM}: dxgkrnl + escalonador de GPU do Windows};
+\node[bx, below=of k2, minimum width=5.4cm] (kk2) {driver NVIDIA (KMD)};
+\node[bx, below=of kk2, minimum width=5.4cm] (g2) {GPU (compartilhada com o desktop / DWM)};
+\node[above=1mm of p2, font=\small] {Windows 11 (WDDM)};
+\end{tikzpicture}\par
+\vspace{2mm}
+{\footnotesize Toda submissão e toda espera passam pela camada extra do WDDM. Em WSL2 há ainda a paravirtualização (VM \so dxgkrnl do host).}
 \end{frame}
 
-% ---------------------------------------------------------------
-\begin{frame}{4. Sincronização host-device}
-\begin{columns}[T]
-\column{0.5\textwidth}
-\scriptsize
+\begin{frame}
+\frametitle{WDDM \vs TCC}
 \begin{itemize}
-\item CUDA é \textbf{assíncrono}: a CPU enfileira kernels num \emph{stream} e segue em frente; a GPU executa depois.
-\item Pontos de sincronização (a CPU para e espera a GPU): \texttt{.cpu()}, \texttt{.item()}, \texttt{.tolist()}, \texttt{bool(tensor)}, \texttt{print(tensor)}, \texttt{torch.cuda.synchronize()}.
-\item Sem sync, \texttt{time.perf\_counter()} mede quando a CPU \emph{enfileirou}, não quando a GPU terminou. Por isso \texttt{timed\_generate} chama \texttt{cuda\_sync()} antes e depois.
-\end{itemize}
-\column{0.48\textwidth}
-\scriptsize
-\textbf{No \texttt{generate} do Transformers} (lido no código da v5.20; confira a sua versão):
+\item Windows tem 2 modelos de driver para GPU NVIDIA (guia de instalação CUDA para Windows):
 \begin{itemize}
-\item Em CUDA, cada passo já faz \texttt{unfinished\_sequences.max() == 0} $\rightarrow$ \texttt{bool}: \textbf{1 sync por token}, com ou sem streamer.
-\item Com streamer, no mesmo ponto: \texttt{streamer.put(tokens.cpu())}, ou seja, cópia D2H + chamada Python.
-\item A versão que adia esse sync em 1 passo (\texttt{DeferredStopCheck}) só está ativa em MPS.
+\item \al{WDDM}: para GPUs com display; é o padrão em GeForce/RTX
+\item \al{TCC}: só GPUs sem display (Tesla, alguns Quadro/RTX pro, GTX Titan); usa o modelo WDM
 \end{itemize}
-\nota{Enquanto a CPU espera o sync, ela não prepara o próximo passo. A GPU também fica parada nesse intervalo.}
-\end{columns}
+\item \alr{GeForce não suporta TCC} (exceto GTX Titan) \so num PC gamer o benchmark sempre roda em WDDM
+\item Ver/trocar: \texttt{nvidia-smi -q | findstr "Driver Model"}; \texttt{nvidia-smi -i 0 -dm TCC} (admin, sem monitor, reinicia o driver)
+\item TCC tira a GPU do escalonador gráfico: é o mais próximo do Linux dentro do Windows
+\end{itemize}
 \end{frame}
 
-% ---------------------------------------------------------------
-\begin{frame}[fragile]{4. O custo do \texttt{TokenTimer} por token}
-\begin{columns}[T]
-\column{0.5\textwidth}
-\begin{codebox}
-def put(self, value):
-    ids = value.tolist()            # D2H ja feito
-    ...
-    if self.is_prompt:
-        if ids != self.prompt_ids:  # compara o prompt
-            raise ValueError(...)
-        ...
-    self.ids.extend(ids)
-    self.times.append(time.perf_counter())
-\end{codebox}
-\column{0.48\textwidth}
-\scriptsize
+\begin{frame}
+\frametitle{Hardware-Accelerated GPU Scheduling (HAGS) e WSL2}
 \begin{itemize}
-\item Por token: \texttt{.cpu()} + \texttt{tolist()} + checagens + \texttt{append}. São µs a dezenas de µs, somados aos $\sim$ms do passo e vezes 160 tokens.
-\item \textbf{1º callback = prompt inteiro}: \texttt{input\_ids.cpu()}, \texttt{tolist()} e comparação de lista acontecem \textbf{dentro} da janela do TTFT. No 5-shot o prompt tem milhares de tokens, então o viés cresce com a condição.
-\item O carimbo é o \textbf{relógio da CPU} quando o token chega no host. Inclui ruído do Python e do GIL; não é tempo de GPU.
+\item Sem HAGS, uma thread de alta prioridade \al{na CPU} agenda o trabalho da GPU; a Microsoft cita limites de \al{overhead de submissão} e \al{latência até a GPU}
+\item Com HAGS, o agendamento vai para um processador dedicado na GPU
+\item Ligar/desligar: Configurações \so Sistema \so Tela \so Gráficos \so Configurações padrão \so ``Agendamento de GPU acelerado por hardware'' (reiniciar)
+\item NVIDIA (CUDA no WSL2): Submit assíncrono + HAGS reduziram o custo de launch; o gap que resta é em \al{cargas pequenas e sequenciais}, onde a latência de launch não se esconde
+\item É exatamente o perfil do \al{decode batch=1} \so o efeito aparece no tok/s, não no prefill
 \end{itemize}
-\nota{A checagem de consistência é boa para correção. Na medição de velocidade, dá para movê-la para depois do \texttt{generate}.}
-\end{columns}
 \end{frame}
 
-% ---------------------------------------------------------------
-\begin{frame}{5. DVFS, clocks e warm-up}
-\begin{columns}[T]
-\column{0.5\textwidth}
-\scriptsize
+\begin{frame}
+\frametitle{Outras fontes de overhead no Windows 11}
 \begin{itemize}
-\item \textbf{DVFS}: o driver muda o clock do SM e da memória conforme carga, temperatura e potência. Em repouso a GPU fica num estado de baixo clock (P8) e leva um tempo para subir.
-\item A T4 tem TDP de \textbf{70 W} e refrigeração passiva: em rodadas longas ela reduz o clock por potência ou temperatura. A medição varia ao longo da campanha.
-\item \textbf{Primeiras chamadas são mais lentas}: carga lazy de módulos CUDA, heurísticas do cuBLAS, crescimento do caching allocator, kernels do bitsandbytes e, com \texttt{torch.compile}, compilação.
+\item \al{Sysmem fallback}: com VRAM cheia o driver usa RAM via PCIe sem erro \so tok/s despenca. Painel NVIDIA \so ``CUDA -- Sysmem Fallback Policy'' \so \emph{Prefer No Sysmem Fallback}
+\item \al{Desktop na mesma GPU}: DWM, navegador e vídeo dividem a GPU e a VRAM
+\item \al{Energia}: plano ``Desempenho máximo''; Painel NVIDIA \so ``Modo de gerenciamento de energia'' \so \emph{Preferir desempenho máximo}; notebook na tomada
+\item \al{CPU}: antivírus, indexação, updates disputam o núcleo que lança kernels
+\item \al{TDR}: kernel $>$ \texttt{TdrDelay} (padrão 2 s) é abortado --- não muda latência, mas derruba runs longos
+\item \al{Relógio} não é o problema: \texttt{time.perf\_counter} usa QPC ($\le$ 1 µs); evite \texttt{time.time()}
 \end{itemize}
-\column{0.48\textwidth}
-\scriptsize
-\textbf{Hoje no projeto}
-\begin{itemize}
-\item Warm-up = \textbf{1 chamada de 8 tokens}. Ela é curta demais para estabilizar o clock e não exercita o tamanho de KV cache de 160 tokens.
-\item A velocidade é medida logo depois da avaliação MedQuAD, então a GPU já chega quente. A 1ª condição de cada processo, não.
-\end{itemize}
-\textbf{Recomendado}
-\begin{itemize}
-\item 3 a 5 chamadas completas (160 tokens, prompt típico da condição) antes de medir; descartar.
-\item Reportar mediana e IC, e checar se as primeiras perguntas são sistematicamente mais lentas.
-\end{itemize}
-\end{columns}
 \end{frame}
 
-% ---------------------------------------------------------------
-\begin{frame}[fragile]{5. Clocks estáveis com \texttt{nvidia-smi}}
-\begin{columns}[T]
-\column{0.52\textwidth}
-\begin{codebox}
-# ver clocks suportados e estado atual
-nvidia-smi -q -d SUPPORTED_CLOCKS
-nvidia-smi -q -d CLOCK,PERFORMANCE,POWER
-
-# (Linux, root) manter driver carregado
-sudo nvidia-smi -pm 1
-# travar clock do SM num valor sustentavel
-sudo nvidia-smi -lgc <MHz>,<MHz>
-# ... rodar benchmark ...
-sudo nvidia-smi -rgc        # destrava
-
-# registrar clocks durante a campanha
-nvidia-smi --query-gpu=timestamp,clocks.sm,\
-clocks.mem,temperature.gpu,power.draw,\
-clocks_event_reasons.active \
---format=csv -lms 200 > clocks.csv
-\end{codebox}
-\column{0.46\textwidth}
-\scriptsize
+\begin{frame}
+\frametitle{Como calcular o overhead: decomposição}
+Por token de decode $i$:
+\[ t_i^{\text{wall}} = \underbrace{t_i^{\text{GPU}}}_{\text{kernels}} + \underbrace{t_i^{\text{launch}} + t_i^{\text{sync}}}_{\text{driver + SO}} + \underbrace{t_i^{\text{py}} + t_i^{\text{streamer}}}_{\text{Python}} \]
 \begin{itemize}
-\item \texttt{-lgc}: trava o clock gráfico/SM. Use um valor da lista \texttt{SUPPORTED\_CLOCKS} \textbf{abaixo do boost máximo}, que a T4 aguente em 70 W sem throttle. O resultado fica mais lento, mas repetível.
-\item Requer root/admin e suporte do driver. Em VMs e no Colab pode ser negado. Nesse caso, \textbf{registre} os clocks e descarte trechos com throttle.
-\item Em drivers antigos o campo se chama \texttt{clocks\_throttle\_reasons.active}.
-\item Salvar o \texttt{clocks.csv} junto do \texttt{manifesto.json} de cada execução.
+\item $t^{\text{wall}}$: \texttt{perf\_counter} (o que o \texttt{TokenTimer} mede)
+\item $t^{\text{GPU}}$: CUDA events ou Nsight Systems (relógio da GPU, $\sim$0,5 µs, independe do SO)
+\item Overhead de host por token e fração:
+\[ O_{\text{host}} = \overline{t^{\text{wall}}} - \overline{t^{\text{GPU}}} \qquad f_{\text{host}} = \frac{O_{\text{host}}}{\overline{t^{\text{wall}}}} \]
+\item Streamer: $\Delta_{\text{streamer}} = t^{\text{wall}}_{\text{com}} - t^{\text{wall}}_{\text{sem}}$ (mesmo prompt e tokens)
 \end{itemize}
-\end{columns}
 \end{frame}
 
-% ---------------------------------------------------------------
-\begin{frame}{6. Tensor cores na T4}
-\begin{columns}[T]
-\column{0.5\textwidth}
-\scriptsize
-\begin{tabular}{lr}
+\begin{frame}
+\frametitle{Como calcular o overhead do Windows (atribuição)}
+\begin{itemize}
+\item Mesma GPU, mesmos pesos, prompt, \texttt{max\_new\_tokens}, versões e clock registrado; mude \al{só o SO}:
+\[ \Delta_{\text{Win}} = \tilde t^{\,\text{wall}}_{\text{Windows}} - \tilde t^{\,\text{wall}}_{\text{Linux}} \qquad \%_{\text{Win}} = \frac{\Delta_{\text{Win}}}{\tilde t^{\,\text{wall}}_{\text{Windows}}} \]
+($\tilde t$ = mediana por token; Linux = dual boot ou live USB; WSL2 é um terceiro caso, não o baseline)
+\item Checagem: se $t^{\text{GPU}}$ é igual nos dois, a diferença é \al{host/driver}, não a GPU
+\item Custo por kernel: $\delta_{\text{launch}} = \Delta_{\text{Win}} / K$, com $K$ = kernels por token (contados no Nsight)
+\item Ablações para separar causas: HAGS on/off, desktop em outra GPU (iGPU), TCC (se a placa permitir), com/sem streamer
+\item Sem Linux disponível: use $O_{\text{host}}$ e a eficiência de banda $\eta = t_{\text{piso}} / \tilde t^{\,\text{wall}}$
+\end{itemize}
+\end{frame}
+
+\begin{frame}
+\frametitle{Exemplo numérico (ilustrativo, não medido)}
+\centering
+\begin{tabular}{lcc}
 \toprule
-\textbf{T4 (datasheet)} & \textbf{pico} \\
+& Linux & Windows 11 (WDDM) \\
 \midrule
-FP32 (CUDA cores) & 8,1 TFLOPS \\
-FP16 misto (tensor cores) & 65 TFLOPS \\
-INT8 (tensor cores) & 130 TOPS \\
-INT4 (tensor cores) & 260 TOPS \\
-Banda DRAM & 300 GB/s \\
+$\tilde t^{\,\text{wall}}$ por token & 30,0 ms & 36,0 ms \\
+$\tilde t^{\,\text{GPU}}$ por token (events) & 27,0 ms & 27,2 ms \\
+$O_{\text{host}}$ & 3,0 ms (10\%) & 8,8 ms (24\%) \\
+decode tok/s & 33,3 & 27,8 \\
 \bottomrule
 \end{tabular}
-\nota{320 tensor cores (8 por SM). Turing não tem BF16 nativo: Unsloth cai para FP16 (\texttt{is\_bfloat16\_supported()} = False).}
-\column{0.48\textwidth}
-\scriptsize
 \begin{itemize}
-\item Tensor core = unidade que faz um bloco de multiplicação de matrizes (MMA) por instrução de warp. Dá $\sim$8$\times$ o FP32.
-\item \textbf{Prefill (GEMM)}: aproveita bem os tensor cores, e o TTFT escala com o tamanho do prompt.
-\item \textbf{Decode (GEMV, M=1)}: o tile do tensor core fica quase vazio e o limite continua sendo a banda. Mais TFLOPS não ajudam, mas \textbf{menos bytes} ajudam.
+\item $\Delta_{\text{Win}} = 6{,}0$ ms/token \so $\%_{\text{Win}} = 6/36 \approx 17\%$
+\item GPU quase igual (27,0 \vs 27,2) \so a diferença é host/driver/SO
+\item Com $K = 600$ kernels/token: $\delta_{\text{launch}} \approx 6\,000/600 = 10$ µs a mais por kernel
+\item Se $t^{\text{GPU}}$ também mudar, olhe clock/potência antes de culpar o Windows
 \end{itemize}
-\end{columns}
 \end{frame}
 
-% ---------------------------------------------------------------
-\begin{frame}{6. Quantização 4-bit (NF4) e kernels de dequant}
-\begin{columns}[T]
-\column{0.5\textwidth}
-\begin{tikzpicture}[x=1cm,y=1cm]
-\node[box,text width=1.9cm,font=\tiny] (w) at (0,0) {pesos NF4\\0,5 byte/peso\\+ absmax por bloco};
-\node[box,text width=1.9cm,font=\tiny] (r) at (2.9,0) {dequant\\em registradores\\(FP16)};
-\node[box,text width=1.6cm,font=\tiny] (m) at (5.5,0) {GEMV\\ou GEMM};
-\draw[arr] (w) -- node[above,font=\tiny]{DRAM} (r);
-\draw[arr] (r) -- (m);
-\end{tikzpicture}
-\scriptsize
-\begin{itemize}
-\item \texttt{LOAD\_IN\_4BIT = True}: bitsandbytes NF4 (QLoRA). Cada peso ocupa 4 bits, com escala por bloco.
-\item \textbf{Decode}: kernel 4-bit lê 4$\times$ menos bytes que FP16 e dequantiza no próprio kernel. Ganha banda, mas paga ALU de dequant, que vale a pena quando o gargalo é memória.
-\item \textbf{Prefill}: em geral dequantiza a matriz para FP16 e chama a GEMM. É trabalho extra; o TTFT 4-bit pode ficar pior que o FP16.
-\end{itemize}
-\column{0.48\textwidth}
-\scriptsize
-\textbf{O que isso muda na leitura dos resultados}
-\begin{itemize}
-\item O decode tok/s mede \emph{kernel 4-bit do bitsandbytes + Unsloth}, não o modelo em si. Outra versão do bnb pode mudar o número.
-\item Os adaptadores LoRA ficam em FP16 por cima do 4-bit: são matmuls extras por camada só na condição fine-tuned.
-\item Alternativas para estudar (fora do protocolo atual): kernels 4-bit dedicados para decode (ex.: Marlin/AWQ/GPTQ), ou fundir o LoRA no peso antes de medir.
-\end{itemize}
-\nota{O caminho exato (gemv vs dequant+GEMM) depende da versão do bitsandbytes. Registre a versão no ambiente.}
-\end{columns}
+\begin{frame}[fragile]
+\frametitle{Microbenchmark: latência de launch e de sync}
+\begin{lstlisting}
+import time, torch
+x = torch.zeros(1, device="cuda")
+
+def launch_us(n=10000):  # só enfileira kernels minúsculos
+    torch.cuda.synchronize(); t = time.perf_counter()
+    for _ in range(n):
+        x.add_(1)
+    torch.cuda.synchronize()
+    return (time.perf_counter() - t) / n * 1e6
+
+def sync_us(n=2000):     # launch + espera, como 1 passo de decode
+    torch.cuda.synchronize(); t = time.perf_counter()
+    for _ in range(n):
+        x.add_(1); torch.cuda.synchronize()
+    return (time.perf_counter() - t) / n * 1e6
+
+for _ in range(3):
+    launch_us(1000)       # warm-up
+print("launch us:", launch_us(), "| launch+sync us:", sync_us())
+\end{lstlisting}
+{\footnotesize Rodar igual no Windows, WSL2 e Linux. A diferença entre SOs é o custo fixo de driver/SO por kernel e por sync.}
 \end{frame}
 
-% ---------------------------------------------------------------
-\begin{frame}{7. Checklist para o benchmark}
-\begin{columns}[T]
-\column{0.5\textwidth}
-\parte{Medição (sem mudar o modelo)}
-\scriptsize
-\begin{itemize}
-\item[$\square$] \textbf{CUDA events} para o tempo de GPU (próximo slide).
-\item[$\square$] \textbf{Warm-up maior}: 3 a 5 gerações completas de 160 tokens por condição.
-\item[$\square$] \textbf{Medir sem streamer}: tempo total com \texttt{generate} puro; TTFT numa chamada separada com \texttt{max\_new\_tokens=1}.
-\item[$\square$] Tirar a comparação do prompt de dentro da janela do TTFT.
-\item[$\square$] Registrar clocks, temperatura, potência e motivos de throttle (\texttt{nvidia-smi -lms}).
-\item[$\square$] Travar clock (\texttt{-lgc}) quando possível; \texttt{-pm 1} no Linux.
-\item[$\square$] Reportar mediana + IC; manter TTFT e decode separados.
-\end{itemize}
-\column{0.48\textwidth}
-\parte{Otimizações (aplicar igual em tudo)}
-\scriptsize
-\begin{itemize}
-\item[$\square$] KV cache estático + \texttt{torch.compile(mode="reduce-overhead")} (CUDA graphs), depois de piloto.
-\item[$\square$] Atenção SDPA/FlashAttention quando o modelo suportar.
-\item[$\square$] Avaliar fundir o LoRA antes do benchmark de velocidade, ou documentar o custo extra.
-\item[$\square$] Fechar outros processos/kernels que usam a GPU.
-\item[$\square$] Perfilar 1 passo com Nsight Systems para ver os buracos entre kernels:\\
-\texttt{nsys profile -t cuda,nvtx python modelos/qwen35.py}
-\end{itemize}
-\nota{Qualquer mudança vale para os 4 modelos e as 4 condições e entra no manifesto.}
-\end{columns}
-\end{frame}
-
-% ---------------------------------------------------------------
-\begin{frame}[fragile]{7. Tempo de GPU com CUDA events (sem streamer)}
-\begin{columns}[T]
-\column{0.58\textwidth}
-\begin{codeboxtiny}
+\begin{frame}[fragile]
+\frametitle{Tempo de GPU no benchmark: CUDA events por token}
+\begin{lstlisting}
 from transformers import LogitsProcessor, LogitsProcessorList
 
-class EventTimer(LogitsProcessor):  # 1 evento CUDA por passo, sem sync
+class EventTimer(LogitsProcessor):   # 1 evento por passo, sem sync
     def __init__(self):
         self.events = []
     def __call__(self, input_ids, scores):
-        ev = torch.cuda.Event(enable_timing=True)
-        ev.record()
+        ev = torch.cuda.Event(enable_timing=True); ev.record()
         self.events.append(ev)
         return scores
-@torch.inference_mode()
-def gpu_timed_generate(model, question, max_new_tokens):
-    _, prompt = build_prompt(question)
-    inputs = encode_prompt(prompt, max_new_tokens)
-    timer = EventTimer()
-    start = torch.cuda.Event(enable_timing=True)
-    end = torch.cuda.Event(enable_timing=True)
-    cuda_sync()
-    start.record()
-    model.generate(**inputs, min_new_tokens=max_new_tokens,
-        max_new_tokens=max_new_tokens, do_sample=False, use_cache=True,
-        pad_token_id=text_tokenizer.pad_token_id,
-        logits_processor=LogitsProcessorList([timer]))
-    end.record()
-    cuda_sync()
-    ms = [start.elapsed_time(ev) for ev in timer.events]
-    return {"ttft_gpu_s": ms[0] / 1000,
-            "total_gpu_s": start.elapsed_time(end) / 1000,
-            "decode_tok_s": (len(ms) - 1) / ((ms[-1] - ms[0]) / 1000)}
-\end{codeboxtiny}
-\column{0.4\textwidth}
-\scriptsize
-\begin{itemize}
-\item O \texttt{LogitsProcessor} roda uma vez por passo, logo depois do forward. \texttt{ev.record()} só enfileira um marcador no stream, sem sync extra.
-\item \texttt{elapsed\_time} usa o relógio da GPU (ms). \texttt{ms[0]} $\approx$ fim do prefill = TTFT de GPU.
-\item Os buracos causados pela CPU continuam contando. Isso é correto: é latência real. O que sai é o ruído do Python do streamer.
-\item Rodar \textbf{depois} do warm-up:
-\end{itemize}
-\begin{codeboxtiny}
-q = speed_questions[0]
-for _ in range(3):  # warm-up, descartado
-    gpu_timed_generate(model, q, 160)
-\end{codeboxtiny}
-\nota{Não executado aqui (sem CUDA). Validar no Colab T4 comparando com o \texttt{TokenTimer}.}
-\end{columns}
+
+timer = EventTimer()
+start = torch.cuda.Event(enable_timing=True); end = torch.cuda.Event(enable_timing=True)
+cuda_sync(); start.record(); t0 = time.perf_counter()
+model.generate(**inputs, min_new_tokens=160, max_new_tokens=160, do_sample=False,
+               use_cache=True, logits_processor=LogitsProcessorList([timer]))
+end.record(); cuda_sync(); wall = time.perf_counter() - t0
+gpu = start.elapsed_time(end) / 1000
+ms = [start.elapsed_time(ev) for ev in timer.events]
+print("wall:", wall, "gpu:", gpu, "O_host:", wall - gpu)
+\end{lstlisting}
+{\footnotesize Não executado aqui (sem GPU). Events usam o relógio da GPU: lacunas ociosas entre kernels entram no tempo.}
 \end{frame}
 
-% ---------------------------------------------------------------
-\begin{frame}{8. Onde achar slides da NVIDIA sobre arquitetura CUDA}
-\scriptsize
-\begin{columns}[T]
-\column{0.5\textwidth}
-\parte{NVIDIA On-Demand (GTC), série do Stephen Jones}
+\begin{frame}
+\frametitle{Nsight Systems no Windows: onde a GPU fica parada}
 \begin{itemize}
-\item \href{https://www.nvidia.com/en-us/on-demand/session/gtcspring21-s31151/}{How GPU Computing Works} (GTC 2021, S31151)
-\item \href{https://www.nvidia.com/en-us/on-demand/session/gtcfall22-a41101/}{How CUDA Programming Works} (GTC 2022, A41101); \href{https://indico.cern.ch/event/1517239/attachments/3021423/5401225/GTC\%20Fall\%202022\%20-\%20A41101\%20-\%20How\%20CUDA\%20Programming\%20-\%20Works\%20-\%20ATLAS\%20TRAINING.pdf}{PDF dos slides (CERN)}
-\item \href{https://www.nvidia.com/en-us/on-demand/session/gtcspring23-S51210/}{How to Write a CUDA Program} (GTC 2023, S51210); \href{https://developer-blogs.nvidia.com/wp-content/uploads/2024/08/How-To-Write-A-CUDA-Program.pdf}{PDF dos slides}
-\item \href{https://www.nvidia.com/en-us/on-demand/session/gtc24-s62401/}{The Ninja Edition} (GTC 2024, S62401)
-\item \href{https://www.nvidia.com/en-us/on-demand/session/gtc25-s72897/}{The Parallel Programming Edition} (GTC 2025, S72897)
-\item Busca geral: \href{https://www.nvidia.com/en-us/on-demand/}{nvidia.com/on-demand}. Muitas sessões têm vídeo e PDF.
+\item \texttt{nsys profile -t cuda,nvtx,osrt -o win python modelos/qwen35.py}
+\item \texttt{nsys stats -r cuda\_api\_sum,cuda\_gpu\_kern\_sum win.nsys-rep}
+\item $K$ = nº de kernels / tokens gerados; soma das durações = $t^{\text{GPU busy}}$
+\item Fração ociosa: $1 - t^{\text{GPU busy}} / t^{\text{wall}}$ \so alta = launch-bound (CPU/driver/SO)
+\item \texttt{cuda\_api\_sum}: tempo de \texttt{cudaLaunchKernel} e \texttt{cudaStreamSynchronize} na CPU --- comparar entre Windows e Linux
+\item Marcar prefill e decode com \texttt{torch.cuda.nvtx.range\_push/pop}
 \end{itemize}
-\parte{Arquitetura (documentos oficiais)}
-\begin{itemize}
-\item \href{https://images.nvidia.com/aem-dam/en-zz/Solutions/design-visualization/technologies/turing-architecture/NVIDIA-Turing-Architecture-Whitepaper.pdf}{Turing Architecture Whitepaper} e \href{https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/tesla-t4/t4-tensor-core-datasheet-951643.pdf}{T4 datasheet}
-\item \href{https://docs.nvidia.com/cuda/turing-tuning-guide/index.html}{Turing Tuning Guide}
-\end{itemize}
-\column{0.48\textwidth}
-\parte{Cursos com slides}
-\begin{itemize}
-\item \href{https://www.olcf.ornl.gov/cuda-training-series/}{OLCF/NERSC CUDA Training Series}: slides e gravações apresentados por engenheiros da NVIDIA; exercícios em \href{https://github.com/olcf/cuda-training-series}{github.com/olcf/cuda-training-series}
-\item \href{https://developer.nvidia.com/teaching-kits}{NVIDIA DLI Teaching Kits}: slides para professores (cadastro)
-\item \href{https://www.nvidia.com/en-us/training/}{NVIDIA DLI}: cursos práticos
-\item \href{https://github.com/NVIDIA/accelerated-computing-hub}{NVIDIA/accelerated-computing-hub}: tutoriais oficiais
-\item \href{https://www.cs.cmu.edu/~zhihaoj2/15-779/slides/03-CUDA-programming.pdf}{CMU 15-779, aula 3--4}: GPU Architecture \& CUDA Programming (Zhihao Jia, 2025)
-\end{itemize}
-\parte{Coletâneas}
-\begin{itemize}
-\item \href{https://github.com/tylera-nvidia/gpuStarterResources}{tylera-nvidia/gpuStarterResources}: índice da série GTC + slides "GPU Core Principles"
-\item \href{https://github.com/MARD1NO/CUDA-PPT}{MARD1NO/CUDA-PPT}: espelho não oficial de PDFs do GTC
-\item \href{https://github.com/gpu-mode/lectures}{gpu-mode/lectures}: aulas da comunidade GPU MODE
-\end{itemize}
-\end{columns}
 \end{frame}
 
-% ---------------------------------------------------------------
-\begin{frame}{Referências técnicas}
-\scriptsize
-\begin{itemize}
-\item NVIDIA. \href{https://docs.nvidia.com/cuda/cuda-programming-guide/}{CUDA Programming Guide}; \href{https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/}{CUDA C++ Best Practices Guide}.
-\item NVIDIA Blog. \href{https://developer.nvidia.com/blog/cuda-graphs/}{Getting Started with CUDA Graphs}; \href{https://developer.nvidia.com/blog/how-implement-performance-metrics-cuda-cc/}{How to Implement Performance Metrics in CUDA C/C++} (CUDA events).
-\item NVIDIA Blog. \href{https://developer.nvidia.com/blog/mastering-llm-techniques-inference-optimization/}{Mastering LLM Techniques: Inference Optimization} (prefill vs decode, banda de memória).
-\item NVIDIA. \href{https://docs.nvidia.com/deploy/nvidia-smi/index.html}{nvidia-smi documentation}; \href{https://docs.nvidia.com/nsight-systems/UserGuide/index.html}{Nsight Systems User Guide}.
-\item PyTorch. \href{https://pytorch.org/blog/accelerating-pytorch-with-cuda-graphs/}{Accelerating PyTorch with CUDA Graphs}; \href{https://docs.pytorch.org/docs/stable/notes/cuda.html}{CUDA semantics} (execução assíncrona); \href{https://docs.pytorch.org/docs/stable/generated/torch.cuda.Event.html}{torch.cuda.Event}.
-\item Hugging Face. \href{https://huggingface.co/docs/transformers/llm_optims}{LLM inference optimization} (static cache + \texttt{torch.compile}); \href{https://huggingface.co/docs/bitsandbytes/main/en/reference/nn/linear4bit}{bitsandbytes Linear4bit}.
-\item Dettmers et al. \href{https://arxiv.org/abs/2305.14314}{QLoRA: Efficient Finetuning of Quantized LLMs} (NF4), 2023.
-\item Jia et al. \href{https://arxiv.org/abs/1903.07486}{Dissecting the NVIDIA Turing T4 GPU via Microbenchmarking}, 2019.
-\end{itemize}
-\nota{Código do projeto: \texttt{modelos/\{gemma4,huatuogpt,medgemma,qwen35\}.py}, onde \texttt{timed\_generate} e \texttt{TokenTimer} são idênticos nos quatro arquivos.}
+\begin{frame}
+\heading{4. Protocolo e checklist}
 \end{frame}
 
+\begin{frame}
+\frametitle{Protocolo de medição (Windows 11)}
+\begin{enumerate}
+\item Registrar: build do Windows, driver, modelo de driver (WDDM/TCC), HAGS, CUDA, PyTorch, Transformers, bitsandbytes, Unsloth, modelo e \texttt{LOAD\_IN\_4BIT}
+\item Monitor na iGPU se possível; fechar navegador/jogos; tomada + desempenho máximo; sysmem fallback desligado
+\item 1 run frio (anotar à parte) + 3 gerações completas de warm-up descartadas
+\item $N \ge 20$ repetições, saída fixa (\texttt{min\_new\_tokens}), \texttt{do\_sample=False}
+\item 3 variantes: wall com streamer, wall sem streamer, CUDA events
+\item Log de clock/temperatura/potência/throttle em paralelo (\texttt{nvidia-smi -lms 200})
+\item Reportar mediana, p90 e IC 95\% (bootstrap); só atribuir ao Windows o que a ablação mostrar
+\end{enumerate}
+\end{frame}
+
+\begin{frame}
+\frametitle{Checklist de otimização do benchmark}
+\begin{itemize}
+\item \alg{Medir} GPU com CUDA events junto do wall-clock: reportar os dois e $O_{\text{host}}$
+\item \alg{Warm-up maior}: 3 $\times$ 160 tokens em vez de 8
+\item \alg{Medir sem streamer} e reportar $\Delta_{\text{streamer}}$; prompt grande pesa no TTFT pelo 1º \texttt{put}
+\item \alg{Fixar/registrar clocks}; descartar runs com throttle
+\item Comparar base \vs fine-tuned com LoRA \al{mesclado} para não medir kernels extras
+\item Piloto de \texttt{torch.compile} + cache estático (CUDA Graphs) para cortar launch overhead
+\item No Windows: HAGS on, sysmem fallback off, desktop fora da GPU; se puder, Linux ou TCC
+\end{itemize}
+\end{frame}
+
+\begin{frame}
+\frametitle{Onde achar slides oficiais e referências}
+\scriptsize\setstretch{1.05}
+\begin{itemize}
+\item NVIDIA GTC On-Demand, série S. Jones: \url{https://www.nvidia.com/en-us/on-demand/session/gtcfall22-a41101/} (How CUDA Programming Works), \url{https://www.nvidia.com/en-us/on-demand/session/gtcspring23-S51210/}, \url{https://www.nvidia.com/en-us/on-demand/session/gtc24-s62401/}, \url{https://www.nvidia.com/en-us/on-demand/session/gtc25-s72897/}
+\item OLCF/NERSC CUDA Training Series: \url{https://www.olcf.ornl.gov/cuda-training-series/}; DLI Teaching Kits: \url{https://developer.nvidia.com/teaching-kits}
+\item CMU 15-779 L3--4 (Z. Jia, 2025): \url{https://www.cs.cmu.edu/~zhihaoj2/15-779/slides/03-CUDA-programming.pdf}
+\item Turing whitepaper e T4 datasheet (nvidia.com); CUDA Best Practices: \url{https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/}
+\item WDDM/TCC: \url{https://docs.nvidia.com/cuda/cuda-installation-guide-microsoft-windows/}; \texttt{nvidia-smi}: \url{https://docs.nvidia.com/deploy/nvidia-smi/}
+\item HAGS: \url{https://devblogs.microsoft.com/directx/hardware-accelerated-gpu-scheduling/}
+\item CUDA no WSL2: \url{https://docs.nvidia.com/cuda/wsl-user-guide/}, \url{https://developer.nvidia.com/blog/leveling-up-cuda-performance-on-wsl2-with-new-enhancements/}
+\item Sysmem fallback: \url{https://nvidia.custhelp.com/app/answers/detail/a_id/5490}; TDR: \url{https://learn.microsoft.com/en-us/windows-hardware/drivers/display/tdr-registry-keys}
+\item QPC: \url{https://learn.microsoft.com/en-us/windows/win32/sysinfo/acquiring-high-resolution-time-stamps}; Nsight Systems: \url{https://docs.nvidia.com/nsight-systems/UserGuide/}
+\item PyTorch CUDA semantics: \url{https://docs.pytorch.org/docs/stable/notes/cuda.html}; HF LLM optims: \url{https://huggingface.co/docs/transformers/llm_optims}
+\end{itemize}
+\end{frame}
+
+\lastslide
 \end{document}
