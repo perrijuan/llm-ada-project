@@ -167,3 +167,9 @@ auditoria anteriores descrevem a versão recebida, inclusive sua seed fixa e
 prompts antigos; são históricos. Para esta versão, consulte este README,
 `PROMPTS_E_PROTOCOLO.md` e `auditoria/REVISAO_PERSONAS_V3.md`.
 
+diagrama do projeto 
+
+<img width="5280" height="4276" alt="ada - finetuning" src="https://github.com/user-attachments/assets/5cf697fb-ec8d-403e-84ec-5aedf3bad214" />
+
+
+
