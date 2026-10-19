@@ -1,0 +1,460 @@
+% !TeX program = pdflatex
+% Compilar: latexmk -pdf relatorio.tex   (ou pdflatex relatorio.tex duas vezes)
+\documentclass[11pt]{article}
+\usepackage[brazil]{babel}
+\usepackage{relatorio}
+\hypersetup{pdftitle={Pipeline experimental llm-ada-project}, pdfauthor={perrijuan}}
+
+\title{Pipeline experimental llm-ada-project}
+\author{Zero-shot, 3-shot, 5-shot e fine-tuning (LoRA) em quatro LLMs médicos}
+\date{Documentação técnica do repositório -- outubro de 2026}
+\paperurl{https://github.com/perrijuan/llm-ada-project}
+
+\begin{document}
+\thispagestyle{plain}
+\maketitle
+
+\begin{bloco}[Resumo]
+O repositório compara quatro LLMs abertos (Gemma~4 E4B, HuatuoGPT-o1-7B, MedGemma~1.5~4B e Qwen3.5-4B) em quatro condições:
+\textbf{zero-shot}, \textbf{3-shot}, \textbf{5-shot} (demonstrações no prompt, sem treino) e \textbf{fine-tuned} (SFT com adaptadores LoRA sobre o checkpoint em 4 bits).
+A avaliação usa as mesmas 48 perguntas MedQuAD, 100 questões MedQA e 100 PubMedQA, além de um benchmark de velocidade (TTFT, TTLT, tokens/s).
+\cod{rodar\_todos.py} executa um processo isolado por execução, \cod{registro.py} grava logs e tabelas, e \cod{consolidar.py} e \cod{resumir.py} produzem as tabelas finais.
+Este documento descreve o código da versão atual (protocolo \cod{icl\_0\_3\_5\_ft5\_personas\_v4\_ft\_separado}).
+\end{bloco}
+
+\tableofcontents
+
+% ------------------------------------------------------------------
+\section{Visão geral do pipeline}
+
+O experimento tem três camadas. O \textbf{executor} (\cod{rodar\_todos.py}) decide a ordem das execuções e abre um processo Python novo para cada uma.
+O \textbf{script do modelo} (\cod{modelos/<modelo>.py}) prepara os dados, avalia as quatro condições e grava resultados.
+As \textbf{ferramentas de pós-processamento} (\cod{consolidar.py} e \cod{resumir.py}) juntam as execuções concluídas e calculam os resumos estatísticos.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=6mm]
+\node[caixa, text width=28mm] (exec) {\sbseries rodar\_todos.py\\[2pt]\footnotesize plano, trava,\\status, retomada};
+\node[caixa, text width=28mm, right=8mm of exec] (mod) {\sbseries modelos/*.py\\[2pt]\footnotesize 1 processo\\por execução};
+\node[caixa, text width=28mm, right=8mm of mod] (reg) {\sbseries registro.py\\[2pt]\footnotesize CSV, JSON, logs,\\figuras};
+\node[caixa, text width=28mm, below=8mm of reg] (cons) {\sbseries consolidar.py\\[2pt]\footnotesize junta execuções\\com status ok};
+\node[caixa, text width=28mm, left=8mm of cons] (res) {\sbseries resumir.py\\[2pt]\footnotesize média, IC 95\%,\\deltas pareados};
+\node[caixa, text width=32mm, left=6mm of res] (pm) {\sbseries prompts\_medicos.py\\[2pt]\footnotesize persona, seeds\\finetuning\_dados.py};
+\draw[seta] (exec) -- node[above, font=\scriptsize, text=DarkGray]{env} (mod);
+\draw[seta] (mod) -- (reg);
+\draw[seta] (reg) -- (cons);
+\draw[seta] (cons) -- (res);
+\draw[seta] (pm) -- (mod);
+\draw[seta, dashed] (exec.south) |- ++(0,-4mm) -| node[pos=0.25, below, font=\scriptsize, text=DarkGray]{após cada processo} (cons.north west);
+\end{tikzpicture}
+\caption{Fluxo entre os arquivos principais. A consolidação é chamada pelo executor após cada processo e pode ser repetida manualmente.}
+\end{figure}
+
+Dentro de cada processo, o script do modelo segue sempre a mesma sequência:
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+\node[caixa, text width=23mm] (a) {\sbseries Dados\\[2pt]\footnotesize filtro, dedup,\\split 192/48};
+\node[caixa, text width=23mm, right=5mm of a] (b) {\sbseries Zero-shot\\[2pt]\footnotesize checkpoint\\original};
+\node[caixa, text width=23mm, right=5mm of b] (c) {\sbseries 3-shot / 5-shot\\[2pt]\footnotesize recarrega,\\exemplos no prompt};
+\node[caixa, text width=23mm, right=5mm of c] (d) {\sbseries Fine-tuned\\[2pt]\footnotesize recarrega, LoRA,\\5 épocas};
+\node[caixa, text width=23mm, right=5mm of d] (e) {\sbseries Gráficos\\[2pt]\footnotesize e tabelas\\finais};
+\draw[seta] (a) -- (b); \draw[seta] (b) -- (c); \draw[seta] (c) -- (d); \draw[seta] (d) -- (e);
+\end{tikzpicture}
+\caption{Sequência em um script de modelo. Em cada condição: MedQuAD (respostas, F1, ROUGE-L, NLL), velocidade, MedQA e PubMedQA.}
+\end{figure}
+
+A ordem das condições é apenas operacional. Cada condição recarrega o checkpoint original com \cod{build\_model()}, então nenhuma condição herda pesos ou estado da anterior.
+
+% ------------------------------------------------------------------
+\section{Modelos e condições experimentais}
+
+\subsection{Os quatro modelos}
+
+Os quatro scripts em \cod{modelos/} são praticamente idênticos: mudam o nome curto, o checkpoint, a pasta de saída e, no HuatuoGPT, o tratamento da resposta de raciocínio.
+
+\begin{table}[H]
+\centering\small
+\footnotesize\begin{tabularx}{\textwidth}{@{}l l l X@{}}
+\toprule
+Chave & \cod{MODEL\_ID} & \cod{MODEL\_NAME} & Particularidade \\
+\midrule
+\cod{gemma4} & \cod{unsloth/gemma-4-E4B-it} & Gemma 4 E4B & Script de referência. \\
+\cod{huatuogpt} & \cod{FreedomIntelligence/HuatuoGPT-o1-7B} & HuatuoGPT-o1-7B & Extrai o texto após \cod{\#\# Final Response}; previews com até 1.024 tokens. \\
+\cod{medgemma} & \cod{unsloth/medgemma-1.5-4b-it} & MedGemma 1.5 4B & Igual ao Gemma, salvo o checkpoint. \\
+\cod{qwen35} & \cod{unsloth/Qwen3.5-4B} & Qwen3.5-4B & Raciocínio desligado no chat template. \\
+\bottomrule
+\end{tabularx}
+\caption{Modelos avaliados, na ordem padrão de execução.}
+\end{table}
+
+Todos carregam com \cod{FastModel.from\_pretrained} (Unsloth), em 4 bits (\cod{LOAD\_IN\_4BIT=True}) e com contexto de inferência \cod{MODEL\_CONTEXT\_LENGTH=16384}.
+O chat template é sempre o do próprio tokenizer; \cod{enable\_thinking=False} só tem efeito nos templates que aceitam essa opção.
+
+\subsection{As quatro condições}
+
+As condições são definidas por uma única lista, lida como \textit{(nome, número de demonstrações, treina?)}:
+
+\begin{lstlisting}[language=Python]
+CONDITIONS = [('zero-shot', 0, False), ('3-shot', 3, False),
+              ('5-shot', 5, False), ('fine-tuned', 0, True)]
+\end{lstlisting}
+
+\begin{table}[H]
+\centering\small
+\begin{tabularx}{\textwidth}{@{}l c c X@{}}
+\toprule
+Condição & Demonstrações & Treina pesos & O que muda \\
+\midrule
+zero-shot & 0 & não & Apenas \cod{system} (persona + instrução) e a pergunta. \\
+3-shot & 3 & não & Três pares pergunta/resposta antes da pergunta de teste. \\
+5-shot & 5 & não & Os mesmos três do 3-shot, mais dois, na mesma ordem. \\
+fine-tuned & 0 & sim (LoRA) & SFT em 192 pares MedQuAD; avaliado sem demonstrações. \\
+\bottomrule
+\end{tabularx}
+\caption{Condições experimentais. ``Shots'' contam demonstrações resolvidas, não personas.}
+\end{table}
+
+Few-shot (ICL) e fine-tuning são fluxos separados: as demonstrações nunca entram no \cod{SFTTrainer}, e o formatador de SFT (\cod{format\_training\_example}) não chama a seleção de demonstrações.
+
+% ------------------------------------------------------------------
+\section{Protocolo experimental}
+
+\subsection{Dados e splits}
+
+\begin{itemize}
+\item \textbf{MedQuAD} (\cod{keivalya/MedQuad-MedicalQnADataset}): filtro \cod{keep\_example} (pergunta $\geq$ 12 caracteres, resposta entre 40 e 900 caracteres, sem prefixos genéricos como ``For more information\ldots''), deduplicação por pergunta normalizada (espaços e caixa), sorteio de 240 registros e split \textbf{192 treino / 48 teste} com \cod{split\_seed}.
+\item \textbf{Banco de demonstrações MedQuAD}: \cod{indices\_demonstracoes} (em \cod{finetuning\_dados.py}) só aceita perguntas filtradas que não estão nem no treino nem no teste; exige pelo menos 5.
+\item \textbf{MedQA} (\cod{GBaker/MedQA-USMLE-4-options}): 100 questões do split \cod{test}; demonstrações do split \cod{train}, sem perguntas do teste.
+\item \textbf{PubMedQA} (\cod{qiaojin/PubMedQA}, \cod{pqa\_labeled}): 100 questões para teste; demonstrações dos registros restantes. Respostas \textit{yes/no/maybe} viram A/B/C.
+\item \textbf{Velocidade}: as 20 primeiras perguntas do teste MedQuAD (\cod{SPEED\_N=20}), com exatamente 160 tokens gerados.
+\item Os conjuntos usados ficam em \cod{registros/dados\_*.csv}, o que permite auditar a separação treino/teste/demonstrações.
+\end{itemize}
+
+\subsection{Seeds}
+
+Há dois tipos de seed, separados de propósito:
+
+\begin{table}[H]
+\centering\small
+\begin{tabularx}{\textwidth}{@{}l l X@{}}
+\toprule
+Seed & Opção & Controla \\
+\midrule
+\cod{split\_seed} & \cod{-{}-split-seed 42} & Subconjunto de 240, split 192/48, perguntas MedQA/PubMedQA. Fica fixa. \\
+\cod{seed} & \cod{-{}-seeds 42 123 2026} & Seleção das demonstrações, \cod{set\_seed} antes de cada condição, \cod{random\_state} do LoRA e seed do \cod{SFTConfig}. \\
+\bottomrule
+\end{tabularx}
+\caption{Seeds. Elas chegam ao script pelas variáveis \cod{LLM\_SPLIT\_SEED} e \cod{LLM\_SEED}.}
+\end{table}
+
+A seleção de demonstrações é determinística por pergunta: um gerador é criado a partir de \cod{sha256(seed|tarefa|pergunta)}, sorteia 5 exemplos do banco, e o 3-shot usa os 3 primeiros.
+Assim, a mesma pergunta recebe os mesmos exemplos em todas as condições e modelos com a mesma seed; o 5-shot difere do 3-shot apenas pelos dois exemplos acrescentados.
+
+\begin{lstlisting}[language=Python]
+digest = hashlib.sha256(f'{SEED}|{task}|{question}'.encode('utf-8')).digest()
+rng = random.Random(int.from_bytes(digest[:8], 'big'))
+return rng.sample(demo_pools[task], 5)[:shots]
+\end{lstlisting}
+
+A variação entre seeds mistura ICL e aleatoriedade do treino, mas não mede variação do split. Repetições com a mesma seed (\cod{-{}-repeticoes}) medem repetibilidade, não amostras independentes, e não há garantia de determinismo numérico em todas as GPUs.
+
+\subsection{Personas e estrutura das mensagens}
+
+\cod{prompts\_medicos.py} define três personas (textos completos em \cod{prompts\_prontos.json}; fontes em \cod{PROMPTS\_E\_PROTOCOLO.md}):
+
+\begin{itemize}
+\item \cod{clinico} (padrão): médico generalista, adaptado do MedAgents.
+\item \cod{biomedico}: pesquisador biomédico, adaptado da model card OpenBioLLM.
+\item \cod{original}: instruções do pacote recebido, sem persona.
+\end{itemize}
+
+O prompt de sistema é \textit{prefixo da persona + instrução da tarefa}: ``Answer the medical question directly in 2-4 factual sentences.'' no MedQuAD e ``Return only the option letter\ldots'' em MedQA/PubMedQA.
+A persona é a mesma nas quatro condições de uma campanha; trocar a persona exige outra pasta de saída.
+
+\begin{lstlisting}
+system:    persona + instrucao da tarefa
+user:      pergunta de demonstracao 1
+assistant: resposta de referencia 1
+...        (3 ou 5 pares; nenhum no zero-shot e no fine-tuned)
+user:      pergunta de teste (sem resposta)
+\end{lstlisting}
+
+\subsection{Fine-tuning (SFT com LoRA)}
+
+O braço \textit{fine-tuned} recarrega o checkpoint base, aplica \cod{FastModel.get\_peft\_model} e treina com \cod{SFTTrainer} (TRL). Cada exemplo de treino é uma conversa \textit{system + pergunta + resposta de referência}.
+
+\begin{table}[H]
+\centering\small
+\begin{tabular}{@{}l l@{\hspace{6mm}}l l@{}}
+\toprule
+Parâmetro & Valor & Parâmetro & Valor \\
+\midrule
+Exemplos de treino & 192 & Épocas & 5 (\cod{max\_steps=-1}) \\
+Quantização base & 4 bits (QLoRA) & Learning rate & $2\times10^{-5}$, linear \\
+LoRA $r$ / $\alpha$ / dropout & 8 / 16 / 0 & Warm-up & 5 passos \\
+Módulos & atenção + MLP (linguagem) & Otimizador & \cod{adamw\_torch}, wd 0{,}01 \\
+Microbatch $\times$ acumulação & $2\times16=32$ & Comprimento SFT & 768 tokens \\
+Precisão & bf16 se suportado, senão fp16 & Checkpointing & \cod{'unsloth'} \\
+\bottomrule
+\end{tabular}
+\caption{Hiperparâmetros de \cod{train\_regime()}. O adapter e o tokenizer são salvos em \cod{<OUTPUT\_DIR>/adapter-fine-tuned}.}
+\end{table}
+
+\subsection{Guardrails}
+
+O código prefere falhar com mensagem clara a mudar o protocolo em silêncio. As principais verificações:
+
+\begin{table}[H]
+\centering\small
+\begin{tabularx}{\textwidth}{@{}l X@{}}
+\toprule
+Onde & Verificação \\
+\midrule
+script do modelo & Exige CUDA e \cod{WORLD\_SIZE=1} (uma GPU, para manter o batch efetivo 32). \\
+\cod{select\_demonstrations} & \cod{shots} precisa ser 0, 3 ou 5. \\
+\cod{make\_messages} & Fine-tuned nunca recebe demonstrações. \\
+\cod{encode\_prompt} & Prompt + tokens reservados para a resposta não podem passar de 16.384; não corta exemplos. \\
+\cod{make\_demo\_pool} / \cod{indices\_demonstracoes} & Pelo menos 5 demonstrações sem sobreposição com teste (e, no MedQuAD, com treino). \\
+\cod{textos\_para\_tokenizacao} & Textos de SFT precisam ser \cod{str} não vazias; indica o índice inválido. \\
+\cod{answer\_nll} & O prefixo tokenizado da conversa completa deve ser igual ao prompt; resposta precisa ter tokens. \\
+\cod{TokenTimer} / \cod{timed\_generate} & Batch 1, um token por callback, tokens do streamer iguais aos do \cod{generate}, 160 tokens exatos no benchmark. \\
+\cod{rodar\_todos.py} & Seeds no intervalo $[0, 2^{32})$, sem modelos ou seeds repetidos, \cod{-{}-repeticoes} $\geq 1$. \\
+\bottomrule
+\end{tabularx}
+\caption{Verificações que interrompem a execução com \cod{ValueError} ou \cod{RuntimeError}.}
+\end{table}
+
+% ------------------------------------------------------------------
+\section{Orquestração com rodar\_todos.py}
+
+\subsection{Opções}
+
+\begin{table}[H]
+\centering\small
+\begin{tabularx}{\textwidth}{@{}l l X@{}}
+\toprule
+Opção & Padrão & Efeito \\
+\midrule
+\cod{-{}-modelos} & os 4 & Quais modelos e em que ordem (\cod{gemma4 huatuogpt medgemma qwen35}). \\
+\cod{-{}-seeds} & \cod{42} & Seeds de execução. \\
+\cod{-{}-repeticoes} & \cod{10} & Repetições por seed (use \cod{1} para estudar seeds). \\
+\cod{-{}-split-seed} & \cod{42} & Seed fixa dos dados. \\
+\cod{-{}-persona} & \cod{clinico} & \cod{clinico}, \cod{biomedico} ou \cod{original}. \\
+\cod{-{}-saida} & \cod{resultados\_icl\_personas} & Pasta da campanha. \\
+\cod{-{}-planejar} & -- & Só imprime o plano; não carrega modelos, dados nem GPU. \\
+\cod{-{}-retomar} & -- & Pula execuções completas com mesmo código e configuração. \\
+\bottomrule
+\end{tabularx}
+\caption{Argumentos de linha de comando.}
+\end{table}
+
+\subsection{Ordem e isolamento}
+
+O executor monta a lista de trabalhos com três laços: \textbf{modelo} $\rightarrow$ \textbf{seed} $\rightarrow$ \textbf{repetição}. Assim, um modelo termina todas as suas execuções antes de o próximo começar.
+Com \cod{-{}-seeds 42 123 2026 -{}-repeticoes 1} são 12 processos e 12 fine-tunings.
+
+Para cada trabalho, o executor cria \cod{<saida>/<modelo>/run\_NN/}, grava \cod{status.json} com \cod{status=\textquotedbl{}rodando\textquotedbl{}} e chama o script com \cod{subprocess.Popen}, usando a pasta como diretório de trabalho. A configuração vai por variáveis de ambiente:
+
+\begin{lstlisting}
+LLM_RUN_DIR, LLM_SEED, LLM_SPLIT_SEED, LLM_PERSONA,
+PYTHONUNBUFFERED=1, PYTHONIOENCODING=utf-8, MPLBACKEND=Agg
+\end{lstlisting}
+
+A saída do processo é mostrada no terminal e copiada linha a linha para \cod{execucao.log}. O executor espera o processo terminar antes de abrir o próximo.
+
+\subsection{Estados, falhas e retomada}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+\node[caixa, text width=22mm] (r) {\sbseries rodando};
+\node[caixa, text width=30mm, right=14mm of r, yshift=14mm] (ok) {\sbseries ok\\\footnotesize código 0};
+\node[caixa, text width=30mm, right=14mm of r] (er) {\sbseries erro\\\footnotesize código $\neq 0$ ou exceção};
+\node[caixa, text width=30mm, right=14mm of r, yshift=-14mm] (in) {\sbseries interrompido\\\footnotesize Ctrl+C};
+\draw[seta] (r.east) -- (ok.west); \draw[seta] (r.east) -- (er.west); \draw[seta] (r.east) -- (in.west);
+\node[right=6mm of ok, text width=60mm, font=\footnotesize, align=left] {entra na consolidação};
+\node[right=6mm of er, text width=60mm, font=\footnotesize, align=left] {pula as demais execuções do modelo e segue para o próximo; código final 1};
+\node[right=6mm of in, text width=60mm, font=\footnotesize, align=left] {encerra o processo filho e a campanha};
+\end{tikzpicture}
+\caption{Estados gravados em \cod{status.json} (com \cod{duracao\_s} e \cod{exit\_code}).}
+\end{figure}
+
+\begin{itemize}
+\item \textbf{Falha}: o traceback vai para \cod{execucao.log}, o processo filho é encerrado (\cod{terminate}, depois \cod{kill} após 20\,s), resultados parciais ficam na pasta e são excluídos da consolidação.
+\item \textbf{Trava}: o arquivo \cod{.em\_execucao} impede dois executores na mesma campanha.
+\item \textbf{Manifesto}: \cod{campanha.json} fixa protocolo, seeds, split, persona e repetições; se a configuração mudar, o executor pede outra \cod{-{}-saida}. Outro protocolo na mesma pasta também é recusado.
+\item \textbf{Retomada}: com \cod{-{}-retomar}, uma pasta existente só é pulada se \cod{status=\textquotedbl{}ok\textquotedbl{}} e todos os campos esperados batem, inclusive \cod{codigo\_sha256} (hash do script do modelo e de todos os \cod{*.py} da raiz). Pastas com erro não são sobrescritas; não se retoma uma época no meio.
+\end{itemize}
+
+% ------------------------------------------------------------------
+\section{Artefatos e logs}
+
+\subsection{Estrutura de uma campanha}
+
+\begin{lstlisting}
+campanha_clinico/
+  campanha.json                 configuracao fixa da campanha
+  consolidado/                  saida de consolidar.py e resumir.py
+  gemma4/run_01/
+    status.json  execucao.log  ambiente.json  nvidia-smi.txt
+    registros/                  prompts, dados, treino, tabelas
+    figuras/                    PNGs dos graficos
+    gemma4-e4b-medquad-unsloth/adapter-fine-tuned/
+    gemma4-e4b-medquad-unsloth-extended/   MedQuAD por pergunta e resumo
+    gemma4-e4b-medquad-unsloth-benchmark/  velocidade, MedQA, PubMedQA
+  huatuogpt/run_01/ ...
+\end{lstlisting}
+
+\subsection{registro.py}
+
+\cod{registro.py} só registra; não altera pesos, loss ou hiperparâmetros.
+
+\begin{table}[H]
+\centering\small
+\begin{tabularx}{\textwidth}{@{}l X@{}}
+\toprule
+Função & O que faz \\
+\midrule
+\cod{escrever\_csv} & Escreve em \cod{.tmp} e renomeia (escrita atômica), UTF-8 com BOM, união das colunas de todas as linhas; listas e dicionários viram JSON. \\
+\cod{iniciar} & Cria pasta própria se o script rodar sozinho; grava \cod{ambiente.json} (Python, plataforma, versões de torch/unsloth/transformers/trl/peft\ldots, persona, prompts, seeds, hiperparâmetros) e \cod{nvidia-smi.txt}. \\
+\cod{etapa} & Imprime \cod{[ETAPA n] descrição} no log. \\
+\cod{registrar\_trainer} & Callback que grava \cod{treino\_<tag>\_steps.csv} (log\_history) e \cod{config\_<tag>.json} (argumentos resolvidos do Trainer). \\
+\cod{salvar\_resultado} & \cod{treino\_<tag>\_metricas.csv} com \cod{training\_loss}, \cod{global\_step} e métricas finais. \\
+\cod{salvar\_tabelas} & Linhas e DataFrames do script, conjuntos \cod{dados\_*.csv}, \cod{datasets.csv} (tamanho e fingerprint) e \cod{model\_config.json}. \\
+\cod{salvar\_figuras} & Salva todas as figuras abertas em \cod{figuras/} (130 dpi). \\
+\bottomrule
+\end{tabularx}
+\caption{Funções de \cod{registro.py}.}
+\end{table}
+
+\begin{table}[H]
+\centering\small
+\begin{tabularx}{\textwidth}{@{}l X@{}}
+\toprule
+Arquivo & Conteúdo \\
+\midrule
+\cod{benchmark\_summary.csv} & Velocidade (média, mediana, P99/P1), acurácia com IC e métricas macro, por condição. \\
+\cod{speed\_per\_question.csv} & TTFT, TTLT, tempo total, tokens/s, \cod{prompt\_tokens}, \cod{token\_times}. \\
+\cod{precision\_per\_question.csv} & Letra prevista, resposta e acerto em MedQA/PubMedQA. \\
+\cod{answers\_per\_question.csv} & Resposta MedQuAD, referência, tempos, F1, ROUGE-L, NLL. \\
+\cod{metrics\_summary.csv} & Agregado MedQuAD e métricas de treino por condição. \\
+\cod{registros/prompts.csv} & Mensagens completas, IDs das demonstrações, seed, persona, condição. \\
+\cod{registros/previews.csv} & Três respostas completas por condição. \\
+\cod{registros/treino\_fine-tuned\_*} & Loss, learning rate e métricas finais do SFT. \\
+\bottomrule
+\end{tabularx}
+\caption{Principais arquivos de resultado por execução.}
+\end{table}
+
+\subsection{Pasta auditoria/}
+
+\cod{auditoria/} guarda o histórico das revisões do pacote: \cod{manifesto.json} e \cod{manifesto\_personas\_v3.json} (SHA-256 dos notebooks, scripts e documentos entregues), os diffs de cada script em relação ao original (\cod{gemma4.diff}, \cod{personas\_v3.diff}, \cod{correcao\_finetuning.diff}\ldots), \cod{PLANO\_PERSONAS\_V3.txt} (saída de \cod{-{}-planejar}) e as notas \cod{VALIDACAO.md}, \cod{REVISAO\_INICIAL\_HISTORICA.md} e \cod{REVISAO\_PERSONAS\_V3.md}.
+Esses arquivos descrevem versões anteriores; o código atual e o \cod{README.md} prevalecem.
+
+% ------------------------------------------------------------------
+\section{Consolidação e métricas}
+
+\subsection{Métricas por execução}
+
+\textbf{MedQuAD (resposta aberta, até 160 tokens, greedy).}
+Token F1 compara palavras normalizadas com multiplicidade; ROUGE-L usa a maior subsequência comum de palavras. Ambos medem semelhança lexical, não correção médica.
+A NLL soma a perda dos tokens da resposta de referência (dado o prompt da condição) e divide pelo total de tokens:
+\[
+\mathrm{NLL} = \frac{\sum_i \mathrm{nll}_i}{\sum_i n_i}, \qquad \mathrm{PPL} = e^{\mathrm{NLL}} .
+\]
+Também são registrados \cod{finished\_rate} (resposta terminou com EOS), número de palavras e pico de VRAM alocada pelo PyTorch.
+
+\textbf{Velocidade.} O \cod{TokenTimer} (um \cod{BaseStreamer}) registra o instante de cada token gerado, com sincronização CUDA antes e depois do \cod{generate}. Há um warm-up de 8 tokens fora da medição.
+\[
+\mathrm{TTFT} = t_1 - t_0, \qquad \mathrm{TTLT} = t_N - t_0, \qquad \text{tokens/s} = \frac{N-1}{\mathrm{TTLT}-\mathrm{TTFT}} .
+\]
+\cod{benchmark\_summary.csv} traz média, mediana e a cauda do pior caso: P99 para tempos (menor é melhor) e P1 para tokens/s (maior é melhor). Com $n=20$ o P99 é quase o máximo, e o código emite um aviso (use $n\geq100$).
+
+\textbf{MedQA e PubMedQA.} \cod{pick\_option} acrescenta \cod{\textquotedbl{}Answer:\textquotedbl{}} ao prompt e escolhe a letra com o maior logit do próximo token (considerando ``A'' e `` A''). A acurácia tem IC aproximado $\bar{x} \pm 1{,}96\, s/\sqrt{n}$, limitado a $[0,1]$.
+Precision, recall e F1 macro são calculados por alternativa (A--D ou A--C) e depois tirada a média simples; não são F1 por especialidade.
+
+\subsection{consolidar.py}
+
+\begin{itemize}
+\item Lê todos os \cod{*/run\_*/status.json}; se houver mais de um protocolo na pasta, para com erro.
+\item Grava \cod{consolidado/execucoes.csv} com todas as execuções, inclusive as que falharam.
+\item Para execuções com \cod{status=\textquotedbl{}ok\textquotedbl{}}, junta cada CSV pelo nome do arquivo, ignora \cod{dados\_*} e acrescenta \cod{exec\_modelo}, \cod{exec\_repeticao}, \cod{exec\_seed}, \cod{exec\_split\_seed}, \cod{exec\_persona} e \cod{exec\_origem}.
+\item CSVs da pasta \cod{registros/} recebem o prefixo \cod{registro\_\_}; são cópias e não devem ser somadas aos CSVs originais.
+\end{itemize}
+
+\subsection{resumir.py}
+
+Agrega entre execuções. Para cada grupo calcula $n$, média, desvio-padrão, mínimo, máximo e IC 95\% da média com $t$ de Student:
+\[
+\bar{x} \pm t_{0{,}975,\,n-1}\,\frac{s}{\sqrt{n}} .
+\]
+
+\begin{table}[H]
+\centering\small
+\begin{tabularx}{\textwidth}{@{}l X@{}}
+\toprule
+Saída em \cod{consolidado/} & Conteúdo \\
+\midrule
+\cod{resumo\_entre\_execucoes.csv} & Resumo de \cod{benchmark\_summary} por modelo, categoria, métrica e condição. \\
+\cod{deltas\_pareados.csv} & Diferença de cada condição contra o zero-shot da mesma execução. \\
+\cod{resumo\_deltas.csv} & Resumo desses deltas (3-shot, 5-shot e fine-tuned $-$ zero-shot). \\
+\cod{resumo\_medquad\_condicoes.csv} & Resumo de \cod{metrics\_summary} por modelo, regime e métrica. \\
+\bottomrule
+\end{tabularx}
+\caption{Arquivos gerados por \cod{resumir.py}.}
+\end{table}
+
+O IC entre execuções descreve a variação observada entre execuções; não substitui a incerteza entre perguntas.
+
+% ------------------------------------------------------------------
+\section{Como reproduzir}
+
+\textbf{Ambiente.} É preciso uma GPU NVIDIA com CUDA e Python com PyTorch, Unsloth, Transformers e TRL compatíveis com os checkpoints. \cod{requirements.txt} lista só as dependências auxiliares (\cod{tqdm}, \cod{pandas}, \cod{numpy}, \cod{matplotlib}, \cod{ipython}, \cod{datasets}, \cod{sentencepiece}, \cod{huggingface\_hub}, \cod{scipy}); a pilha de treino segue a instalação oficial do Unsloth. Checkpoints restritos exigem login no Hugging Face.
+
+\begin{lstlisting}[language=bash]
+# 1. Dependencias auxiliares (depois de PyTorch CUDA + Unsloth)
+python -m pip install -r requirements.txt
+
+# 2. Conferir o plano (sem GPU, sem downloads)
+python rodar_todos.py --repeticoes 1 --seeds 42 123 2026 --persona clinico --planejar
+
+# 3. Piloto com um modelo
+python rodar_todos.py --modelos medgemma --repeticoes 1 --seeds 42 --saida piloto
+python -m pip freeze > ambiente_validado.txt
+
+# 4. Campanha completa: 4 modelos x 3 seeds = 12 processos
+python rodar_todos.py --repeticoes 1 --seeds 42 123 2026 --persona clinico --saida campanha_clinico
+
+# 5. Retomar apos interrupcao (pula so execucoes completas)
+python rodar_todos.py --repeticoes 1 --seeds 42 123 2026 --persona clinico --saida campanha_clinico --retomar
+
+# 6. Consolidar e resumir (a consolidacao tambem roda apos cada processo)
+python consolidar.py campanha_clinico
+python resumir.py campanha_clinico
+\end{lstlisting}
+
+\begin{bloco}[Boas práticas]
+\begin{itemize}
+\item Não atualize bibliotecas durante uma campanha; use a mesma GPU para todos os modelos.
+\item Mudou código, persona, seeds ou repetições: use uma nova \cod{-{}-saida}.
+\item Para estudar seeds, prefira \cod{-{}-repeticoes 1}; repetições da mesma seed não são amostras independentes.
+\item Outra persona é outra campanha: \cod{-{}-persona biomedico -{}-saida campanha\_biomedico}.
+\end{itemize}
+\end{bloco}
+
+% ------------------------------------------------------------------
+\section{Limitações e pontos de atenção}
+
+\begin{itemize}
+\item \textbf{Sem execução real nesta documentação}: o texto foi escrito a partir do código; não houve download de modelos, inferência ou treino em GPU.
+\item \textbf{Testes ausentes}: o \cod{README.md} cita \cod{python -m unittest discover -s testes -v}, mas a pasta \cod{testes/} foi removida do repositório; o comando não funciona na versão atual.
+\item \textbf{Nome do protocolo}: \cod{status.json} e \cod{campanha.json} usam \cod{icl\_0\_3\_5\_ft5\_personas\_v4\_ft\_separado} (\cod{rodar\_todos.py}), mas \cod{ambiente.json} grava \cod{icl\_0\_3\_5\_ft5\_personas\_v3} (\cod{prompts\_medicos.py}). Não afeta a execução; vale alinhar para evitar confusão na auditoria.
+\item \textbf{Retomada}: \cod{codigo\_sha256} cobre os \cod{*.py}, mas não \cod{prompts\_prontos.json} (que é só referência; os prompts usados vêm de \cod{prompts\_medicos.py}).
+\item \textbf{HuatuoGPT}: avaliação principal e velocidade usam 160 tokens, o que pode cortar o raciocínio antes de \cod{\#\# Final Response}.
+\item \textbf{Métricas}: F1 e ROUGE-L são lexicais; perplexidade depende do tokenizador e não serve como ranking direto entre famílias; a escolha de letra pelo próximo token supõe letras de um único token.
+\item \textbf{Comparação ICL $\times$ FT}: em MedQA e PubMedQA o few-shot usa exemplos do próprio benchmark, enquanto o fine-tuning usa apenas MedQuAD.
+\end{itemize}
+
+\end{document}
