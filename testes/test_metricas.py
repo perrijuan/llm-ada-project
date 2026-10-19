@@ -138,6 +138,17 @@ class MetricasTest(unittest.TestCase):
         self.assertIn("dependencia 'pacote_que_nao_existe_xyz' nao instalada", erros[0])
         self.assertIn('modulo nao encontrado', erros[1])
 
+    def test_template(self):
+        # O template documentado precisa funcionar como esta, para servir de ponto de partida.
+        plugins, erros = carregar_plugins(['metricas.plugins.template'])
+        self.assertEqual(erros, [])
+        relatorio = executar(self.campanha, plugins)
+        self.assertEqual(relatorio[self.run]['ok'], ['template'])
+        linhas = ler(self.run / 'metricas_template.csv')
+        self.assertEqual(len(linhas), 8)
+        self.assertEqual(linhas[0]['palavras_resposta'], '1')
+        self.assertEqual(float(linhas[0]['razao_tamanho']), 1.0)
+
     def test_falha_no_plugin_nao_para_os_outros(self):
         class Quebra:
             nome, escopo = 'quebra', 'run'

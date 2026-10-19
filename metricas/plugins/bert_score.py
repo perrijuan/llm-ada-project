@@ -1,7 +1,7 @@
 """Exemplo de modulo externo, escopo pergunta: BERTScore entre prediction e reference.
 
-Template para novos plugins: expor criar() que devolve um objeto com nome, escopo,
-avaliar_pergunta(row) e avaliar_run(run). Requer: pip install bert-score
+Exemplo real com lib externa; para comecar um plugin novo use template.py (comentado passo a passo).
+Requer: pip install bert-score
 """
 from bert_score import BERTScorer
 

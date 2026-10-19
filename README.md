@@ -137,7 +137,9 @@ Cada plugin é um módulo Python importável (`--plugins pacote.modulo`) com o c
 
 O método do escopo que não é usado pode devolver `{}`. Um modelo/módulo externo de métricas não precisa
 mudar nada no repositório: basta expor essa interface e estar no `PYTHONPATH`.
-`metricas/plugins/bert_score.py` é o modelo para isso (`pip install bert-score`, gera `bert_p`, `bert_r`, `bert_f1`).
+Para criar um, copie `metricas/plugins/template.py`: ele é comentado passo a passo (PASSO 0 a 7), roda sem dependências
+e tem autoteste (`python -m metricas.plugins.template`). `metricas/plugins/bert_score.py` é um exemplo real com lib externa
+(`pip install bert-score`, gera `bert_p`, `bert_r`, `bert_f1`).
 `metricas/plugins/desempenho.py` (builtin, escopo run) dá média/p50/p95 de `latency_s`, `ttft_s`, `tokens_per_s`,
 `decode_tokens_per_s` e `peak_vram_gb` por regime, além de `train_runtime` e `training_loss`.
 Colunas ausentes no CSV são puladas: hoje o pico de VRAM da geração fica em `registros/summary_df.csv` (`gen_peak_vram_gb`), não por pergunta.
