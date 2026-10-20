@@ -1,0 +1,4 @@
+# Instale no mesmo ambiente que executa rodar_metricas.py.
+# PyTorch ja faz parte do ambiente de treinamento do experimento.
+bert-score==0.3.13
+ollama==0.6.3

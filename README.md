@@ -131,6 +131,41 @@ O pico de VRAM continua em `gen_peak_vram_gb`. Como o código mudou, use uma nov
 
 ## Métricas extras (plugins)
 
+### Phi-4 e BERTScore na configuracao portuguesa do ADA
+
+Depois que as runs terminarem, instale as dependencias opcionais no mesmo ambiente
+Python e disponibilize o modelo `phi4` em um Ollama local. As implementacoes em
+`metricas/avaliacao_pt/` foram copiadas do projeto ADA para manter esta copia
+executavel sem depender de caminhos externos. O judge utiliza o prompt portugues,
+temperatura zero e seed 42. O BERTScore usa `bert-base-multilingual-cased`, camada
+9, `language="pt"`, sem IDF e sem reescala.
+
+```bash
+python -m pip install -r requirements-metricas-pt.txt
+ollama pull phi4
+python rodar_metricas.py campanha_clinico --plugins metricas.plugins.bert_score_pt
+python rodar_metricas.py campanha_clinico --plugins metricas.plugins.phi4_judge_pt
+python consolidar.py campanha_clinico
+python resumir.py campanha_clinico
+```
+
+Os arquivos `metricas_bert_score_pt.csv` e `metricas_phi4_judge_pt.csv` guardam
+uma linha por pergunta e condicao. O resumo gera `metricas_pt_por_execucao.csv`,
+`resumo_metricas_pt.csv`, `deltas_metricas_pt.csv` e
+`resumo_deltas_metricas_pt.csv` em `consolidado/`. Os deltas usam apenas perguntas
+com nota valida tanto no zero-shot quanto na condicao comparada. Respostas vazias
+ou falhas do avaliador ficam sem nota e com o motivo na coluna `erro`.
+
+As respostas MedQuAD estao em ingles. Esta configuracao portuguesa avalia esses
+textos sem traduzi-los; os resultados devem ser identificados como uma serie
+distinta do BERTScore em ingles do plugin `bert_score` anterior. O Phi-4 depende
+do Ollama em execucao, e sua trilha fica em `registros/phi4_judge_pt_chamadas.csv`
+em cada run. Os plugins podem ser executados novamente sobre runs concluidas
+sem repetir treino ou inferencia. Execute os dois comandos separadamente para
+liberar a memoria do BERTScore antes que o Ollama carregue o Phi-4.
+
+### Plugins existentes
+
 Depois das runs, `rodar_metricas.py` calcula métricas a partir dos arquivos já salvos
 (não usa GPU, salvo se o plugin precisar) e grava `metricas_<nome>.csv` em cada run com `status=ok`:
 ```bash
@@ -142,8 +177,9 @@ python consolidar.py campanha_clinico                          # junta em consol
 Sem `--ignorar-faltantes`, um plugin que não importa (ex.: `bert_score` não instalado) para tudo
 antes de rodar; com a opção, segue com os demais. O CLI lista por run quais plugins rodaram ou falharam.
 
-Para aplicar o pacote em outra cópia do projeto (ou conferir antes de usar), rode `python aplicar_metricas.py` na raiz:
-ele recria os arquivos de `metricas/`, `rodar_metricas.py` e os testes, e roda a verificação.
+O `aplicar_metricas.py` conserva o pacote historico de plugins e nao inclui os
+novos modulos portugueses. Para aplicar esta integracao em outra copia, use os
+arquivos da branch completa.
 
 Passo a passo para criar um plugin novo (arquitetura, contrato, testes e erros comuns): [docs/GUIA_PLUGINS_METRICAS.md](docs/GUIA_PLUGINS_METRICAS.md).
 
@@ -178,8 +214,8 @@ Qwen3.5-4B por Qwen3-1.7B e não promete os F1 macro do paper.
 O fine-tuning usa LoRA do pacote, não atualização de todos os pesos.
 F1 por sobreposição textual e F1 macro de alternativas não são F1 de especialidade.
 
-11 testes sem GPU passaram, com processos artificiais reais para verificar
-sequência, isolamento, seeds, retomada, erros e separação ICL/FT.
+Os 12 testes disponiveis passaram sem GPU. Eles cobrem o runner de plugins,
+consolidacao, resumos e falhas simuladas; nao exercitam treino ou inferencia real.
 Não foram executados downloads, inferência ou treinamento de LLMs nesta revisão.
 
 ```bash
